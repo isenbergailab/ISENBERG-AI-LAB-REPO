@@ -1,2 +1,48 @@
-- skills/jev-browser — browser automation skill by Tdepth
-update README with contents list
+# Projects
+
+Full club projects live here. Each project gets its own folder.
+
+## Structure
+
+```
+projects/
+  <project-name>/
+    README.md
+    src/
+```
+
+## Active Projects
+
+| Project | Lead | Status | Description |
+|---|---|---|---|
+| _None yet_ | | | Add yours via Pull Request |
+
+## Starting a Project
+
+1. Pick a short, lowercase, hyphenated name (e.g. `audit-sampler`)
+2. Create `projects/<project-name>/README.md`
+3. Add your code under `projects/<project-name>/src/`
+4. Add a row to the table above
+5. Open a Pull Request
+
+## Project README Template
+
+Copy this into your project's `README.md`:
+
+```markdown
+# Project Name
+
+**Lead:** your GitHub username
+**Status:** Idea / In Progress / Complete
+
+## What It Does
+One or two sentences.
+
+## How to Run
+Steps to install and run.
+
+## Tools Used
+Models, libraries, APIs.
+```
+
+Skills (small reusable tools) go in `skills/`, not here.

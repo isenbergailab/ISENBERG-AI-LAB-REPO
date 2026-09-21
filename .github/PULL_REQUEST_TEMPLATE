@@ -1,0 +1,25 @@
+## What This Adds
+
+<!-- One or two sentences. -->
+
+## Folder
+
+<!-- e.g. projects/audit-sampler or skills/jev-browser -->
+
+## Type
+
+- [ ] New project
+- [ ] New skill
+- [ ] Update to existing work
+- [ ] Docs / README fix
+
+## How to Test
+
+<!-- Steps a reviewer can follow to confirm it works. -->
+
+## Checklist
+
+- [ ] Folder has a README.md
+- [ ] Code runs
+- [ ] No API keys, passwords, or .env files
+- [ ] No personal or client data

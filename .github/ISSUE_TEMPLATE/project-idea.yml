@@ -1,0 +1,31 @@
+name: Project or Skill Idea
+description: Propose a new project or skill
+title: "[Idea]: "
+labels: ["idea"]
+body:
+  - type: dropdown
+    id: type
+    attributes:
+      label: Type
+      options:
+        - Project
+        - Skill
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What does this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: approach
+    attributes:
+      label: Approach
+      description: Tools, models, rough plan.
+  - type: input
+    id: help
+    attributes:
+      label: Looking for collaborators?
+      placeholder: Yes / No, skills needed

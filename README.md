@@ -1,2 +1,10 @@
-# ISENBERG-AI-LAB-REPO
-Student-led AI lab at UMass Isenberg. Workflows, agents, and automations that members built and tested.
+# Isenberg AI Lab
+
+AI experimentation club at UMass Isenberg.
+
+## Contents
+- `projects/` — full club projects
+- `skills/` — reusable tools and agent skills
+
+## Contribute
+See [CONTRIBUTING.md](CONTRIBUTING.md).

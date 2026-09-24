@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Jev Feed Filter settings</title>
+<link rel="stylesheet" href="ui.css">
+<style>
+  main { max-width: 640px; margin: 0 auto; padding: 32px 20px 48px; }
+  section { padding: 18px 0; border-top: 1px solid var(--rule); }
+  header { padding-bottom: 14px; }
+  .keyrow { display: flex; gap: 8px; }
+  .keyrow input { flex: 1; }
+  .cat { display: grid; grid-template-columns: 22px 1fr 64px; gap: 4px 10px; align-items: center; padding: 10px 0; }
+  .cat + .cat { border-top: 1px dashed var(--rule); }
+  .cat .desc { grid-column: 2 / 4; font-size: 12px; color: var(--muted); }
+  .cat .slider { grid-column: 2 / 3; }
+  .cat .val { text-align: right; }
+  .modes { display: grid; gap: 8px; }
+  .modes label { display: grid; grid-template-columns: 22px 1fr; gap: 2px 10px; }
+  .modes small { grid-column: 2; color: var(--muted); }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .grid2 label { font-size: 12px; color: var(--muted); display: grid; gap: 4px; }
+  .actions { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
+  @media (max-width: 480px) { .grid2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Jev Feed Filter</h1>
+    <p class="muted">Each post on X gets three yes/no questions sent to TypeSafe Jev. Posts over your thresholds collapse.</p>
+  </header>
+
+  <section>
+    <h2>TypeSafe API key</h2>
+    <div class="keyrow">
+      <input id="apiKey" type="password" placeholder="sk-..." autocomplete="off" spellcheck="false">
+      <button id="saveKey" class="primary">Save</button>
+      <button id="testKey">Test</button>
+    </div>
+    <p id="keyStatus" class="status"></p>
+    <p class="muted" style="font-size:12px">Stored only on this device. Never synced.</p>
+  </section>
+
+  <section>
+    <h2>What to filter</h2>
+    <div id="cats"></div>
+    <p class="muted" style="font-size:12px">Threshold is the Jev probability needed to filter. Higher means fewer, surer catches. Start high, lower slowly.</p>
+  </section>
+
+  <section>
+    <h2>What happens to flagged posts</h2>
+    <div class="modes">
+      <label><input type="radio" name="mode" value="collapse"><span>Collapse</span><small>One line with reason. Click Show to open.</small></label>
+      <label><input type="radio" name="mode" value="hide"><span>Hide</span><small>Removed from the timeline entirely.</small></label>
+      <label><input type="radio" name="mode" value="label"><span>Label only</span><small>Post stays, reason shown above it. Good for tuning.</small></label>
+    </div>
+  </section>
+
+  <section>
+    <h2>Never filter these accounts</h2>
+    <textarea id="allowlist" placeholder="one handle per line, with or without @"></textarea>
+  </section>
+
+  <section>
+    <h2>Advanced</h2>
+    <div class="grid2">
+      <label>Model (pinned)<input id="model" type="text"></label>
+      <label>Skip posts shorter than (chars)<input id="minChars" type="text" inputmode="numeric"></label>
+      <label>API base URL<input id="apiBase" type="text"></label>
+      <label>Parallel requests<input id="maxConcurrent" type="text" inputmode="numeric"></label>
+    </div>
+    <div class="actions">
+      <button id="save" class="primary">Save settings</button>
+      <button id="clearCache">Clear cached verdicts</button>
+      <span id="saveStatus" class="status"></span>
+    </div>
+  </section>
+</main>
+<script type="module" src="options.js"></script>
+</body>
+</html>

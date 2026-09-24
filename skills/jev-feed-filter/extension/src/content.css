@@ -1,0 +1,42 @@
+/* Inherits X's own font and colors so it fits light, dim and dark themes. */
+.jevx-hidden { display: none !important; }
+
+.jevx-collapsed > :not(.jevx-bar) { display: none !important; }
+
+.jevx-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 16px;
+  font: inherit;
+  font-size: 13px;
+  line-height: 18px;
+  color: inherit;
+  opacity: 0.72;
+  border-left: 0;
+  cursor: default;
+}
+.jevx-collapsed .jevx-bar { padding: 11px 16px; }
+.jevx-labelled .jevx-bar { padding: 6px 16px 0; opacity: 0.6; }
+
+.jevx-info {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.jevx-btn {
+  flex: none;
+  font: inherit;
+  font-size: 12px;
+  color: inherit;
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 0;
+  padding: 2px 10px;
+  cursor: pointer;
+}
+.jevx-btn:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
+.jevx-btn:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }

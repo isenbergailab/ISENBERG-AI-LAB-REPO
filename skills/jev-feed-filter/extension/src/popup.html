@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="ui.css">
+<style>
+  body { width: 290px; padding: 14px 16px 12px; }
+  .top { display: flex; justify-content: space-between; align-items: baseline; }
+  table { width: 100%; border-collapse: collapse; margin: 10px 0 6px; font-size: 13px; }
+  td { padding: 4px 0; border-bottom: 1px solid var(--rule); }
+  td.num { text-align: right; }
+  tr.sub td { color: var(--muted); font-size: 12px; }
+  .foot { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; }
+  #warn { margin: 8px 0 0; font-size: 12px; color: var(--warn); }
+  #warn:empty { display: none; }
+</style>
+</head>
+<body>
+  <div class="top">
+    <h1 style="font-size:17px">Feed Filter</h1>
+    <label class="row"><input type="checkbox" id="enabled"><span>On</span></label>
+  </div>
+  <p id="warn"></p>
+  <table>
+    <tr><td>Posts checked</td><td class="num" id="checked">0</td></tr>
+    <tr><td>Ragebait filtered</td><td class="num" id="f-ragebait">0</td></tr>
+    <tr><td>AI slop filtered</td><td class="num" id="f-slop">0</td></tr>
+    <tr><td>Engagement bait filtered</td><td class="num" id="f-bait">0</td></tr>
+    <tr class="sub"><td>Jev calls / cache hits</td><td class="num" id="calls">0 / 0</td></tr>
+    <tr class="sub"><td>Spend this session</td><td class="num" id="cost">$0.00000</td></tr>
+  </table>
+  <div class="foot">
+    <span class="muted" style="font-size:12px">Counts reset when the browser closes.</span>
+    <button id="settings">Settings</button>
+  </div>
+<script type="module" src="popup.js"></script>
+</body>
+</html>

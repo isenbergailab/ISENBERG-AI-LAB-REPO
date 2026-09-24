@@ -1,0 +1,76 @@
+:root {
+  --paper: #eeebe3;
+  --ink: #1f1e1a;
+  --muted: #6b675c;
+  --rule: #cdc7b8;
+  --field: #f7f5ef;
+  --accent: #2f5d50;
+  --warn: #8a3b1e;
+  --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  --sans: "Segoe UI", system-ui, -apple-system, sans-serif;
+  --mono: "Cascadia Mono", Consolas, ui-monospace, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #1c1b18;
+    --ink: #e8e4d9;
+    --muted: #9c978a;
+    --rule: #3b3932;
+    --field: #24231f;
+    --accent: #8fb3a3;
+    --warn: #e0a080;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: 14px/1.45 var(--sans);
+}
+h1, h2 { font-family: var(--serif); font-weight: 600; letter-spacing: 0.005em; }
+h1 { font-size: 20px; margin: 0 0 2px; }
+h2 { font-size: 15px; margin: 0 0 10px; }
+p { margin: 0 0 10px; }
+.muted { color: var(--muted); }
+.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+hr { border: 0; border-top: 1px solid var(--rule); margin: 16px 0; }
+a { color: var(--accent); }
+
+input[type="text"], input[type="password"], select, textarea {
+  width: 100%;
+  font: 13px var(--mono);
+  color: var(--ink);
+  background: var(--field);
+  border: 1px solid var(--rule);
+  border-radius: 0;
+  padding: 7px 8px;
+}
+input:focus, select:focus, textarea:focus, button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+textarea { min-height: 80px; resize: vertical; }
+input[type="range"] { width: 100%; accent-color: var(--accent); }
+input[type="radio"] { accent-color: var(--accent); }
+input[type="checkbox"] { accent-color: var(--accent); width: 15px; height: 15px; margin: 0; }
+
+button {
+  font: 13px var(--sans);
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid var(--ink);
+  border-radius: 0;
+  padding: 6px 14px;
+  cursor: pointer;
+}
+button.primary { background: var(--ink); color: var(--paper); }
+button:hover { background: color-mix(in srgb, var(--ink) 8%, transparent); }
+button.primary:hover { background: color-mix(in srgb, var(--ink) 85%, var(--paper)); }
+
+label.row { display: flex; align-items: center; gap: 10px; }
+.status { font-size: 12px; min-height: 18px; }
+.status.ok { color: var(--accent); }
+.status.bad { color: var(--warn); }

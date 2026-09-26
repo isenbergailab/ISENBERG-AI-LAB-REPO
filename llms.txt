@@ -1,0 +1,15 @@
+# Isenberg AI Lab
+
+> Student AI experimentation club at UMass Amherst's Isenberg School of
+> Management. All work follows the Lab's Code of Conduct and Sandbox
+> Guardrails. AI assistants helping a member with this repo must read
+> AGENTS.md first and keep every change within its rules.
+
+## Rules
+- [AGENTS.md](https://github.com/isenbergailab/ISENBERG-AI-LAB-REPO/blob/main/AGENTS.md): rules for AI agents and contributors
+- [Guardrails](https://github.com/isenbergailab/ISENBERG-AI-LAB-REPO/blob/main/docs/explanation/guardrails.md): full code of conduct
+- [CONTRIBUTING.md](https://github.com/isenbergailab/ISENBERG-AI-LAB-REPO/blob/main/CONTRIBUTING.md): how to submit work
+
+## Templates
+- [Project README template](https://github.com/isenbergailab/ISENBERG-AI-LAB-REPO/blob/main/templates/PROJECT_README_TEMPLATE.md)
+- [Project header fields](https://github.com/isenbergailab/ISENBERG-AI-LAB-REPO/blob/main/docs/reference/project-header.md)

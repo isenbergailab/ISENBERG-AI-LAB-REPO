@@ -1,0 +1,6 @@
+# Every change needs approval from an officer listed here.
+# Add each officer's GitHub username. Keep at least two.
+* @Tdepth
+/AGENTS.md @Tdepth
+/docs/explanation/guardrails.md @Tdepth
+/.github/ @Tdepth

@@ -1,0 +1,32 @@
+site_name: Isenberg AI Lab Docs
+repo_url: https://github.com/isenbergailab/ISENBERG-AI-LAB-REPO
+edit_uri: edit/main/docs/
+theme:
+  name: material
+  font:
+    text: IBM Plex Sans
+    code: IBM Plex Mono
+  palette:
+    - scheme: default
+      primary: brown
+      accent: deep orange
+      toggle: {icon: material/weather-night, name: Dark mode}
+    - scheme: slate
+      primary: brown
+      accent: deep orange
+      toggle: {icon: material/weather-sunny, name: Light mode}
+  features: [navigation.sections, content.action.edit, search.suggest]
+markdown_extensions: [tables, admonition, toc]
+nav:
+  - Home: index.md
+  - Tutorials:
+      - Your first project: tutorials/first-project.md
+  - How-to:
+      - Add a doc: how-to/add-a-doc.md
+      - Publish the monthly report: how-to/monthly-report.md
+  - Reference:
+      - Project header fields: reference/project-header.md
+  - Explanation:
+      - Guardrails: explanation/guardrails.md
+  - Reports:
+      - reports/index.md

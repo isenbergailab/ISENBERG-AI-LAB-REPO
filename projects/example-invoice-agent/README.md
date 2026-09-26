@@ -16,7 +16,7 @@ sandbox:
   disposable: true
   fake_inputs: true
   capped: true
-  watched: true
+  watched: false
 approval_actions: [writing outside project folder]
 unattended_runs: false
 officer_review:
@@ -35,3 +35,5 @@ Reads fake invoices and flags duplicates. Sample only.
 ## Negative results
 
 First version missed duplicates with different date formats.
+
+

@@ -1,0 +1,14 @@
+services:
+  demo:
+    build: .
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 256m
+    cpus: 1
+    tmpfs:
+      - /tmp:size=67108864,mode=1777
+    stdin_open: true
+    tty: true

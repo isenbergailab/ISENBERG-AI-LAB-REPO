@@ -1,0 +1,3 @@
+# Test-only dependencies. Runtime core uses Python standard library.
+cryptography>=43
+pypdf>=5

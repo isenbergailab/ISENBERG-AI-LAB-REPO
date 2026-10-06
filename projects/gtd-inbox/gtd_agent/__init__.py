@@ -1,0 +1,1 @@
+"""Obsidian GTD inbox assistant."""

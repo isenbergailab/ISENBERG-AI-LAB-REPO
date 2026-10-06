@@ -1,0 +1,16 @@
+[project]
+name = "obsidian-gtd-inbox-agent"
+version = "0.2.0"
+description = "Local approval-first GTD agent for an Obsidian vault: Inbox processing, next-step promotion, follow-ups, digest, weekly review"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+keyring = ["keyring>=24"]
+pdf = ["pypdf>=5"]
+
+[project.scripts]
+gtd-agent = "gtd_agent.cli:main"
+
+[tool.setuptools]
+packages = ["gtd_agent"]

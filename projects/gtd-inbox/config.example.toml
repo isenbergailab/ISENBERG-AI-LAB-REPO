@@ -1,0 +1,117 @@
+# GTD agent version 2. Copy to config.toml and edit.
+# Secrets never go here. Save them with `set-secret` (see README).
+
+[vault]
+root = "C:/path/to/your/Obsidian/VAULT"
+# Paths are relative to root. The defaults match 04_REFERENCE/SYSTEM/VAULT_RULES.md.
+# Change them only if you rename folders.
+# inbox = "00_INBOX/INBOX.md"
+# single_actions = "01_GTD/SINGLE_ACTIONS.md"
+# someday = "01_GTD/SOMEDAY_MAYBE.md"
+# reviews_dir = "01_GTD/REVIEWS"
+# projects_dir = "02_PROJECTS"
+# areas_dir = "03_AREAS"
+# reference_dir = "04_REFERENCE"
+# archive_dir = "05_ARCHIVE"
+# agent_dir = "_agent"
+# review_template = "04_REFERENCE/SYSTEM/TEMPLATES/WEEKLY_REVIEW_TEMPLATE.md"
+
+[agent]
+mode = "approval"              # "dry_run" previews only; "approval" writes after you tick Approve
+state_dir = "state"            # ledger, backups, undo records, secrets. Must be outside the vault.
+poll_seconds = 10              # how often APPROVAL.md ticks are applied
+scan_interval_seconds = 60     # how often the Inbox and housekeeping run
+max_capture_chars = 6000
+timezone = "UTC"  # used for calendar events without their own time zone
+auto_promote_next = false       # finishing a project's #next step promotes the first open step (logged, undoable)
+tidy_done_steps = false         # steps ticked before today move under "### Done" (logged, undoable)
+edit_quiet_minutes = 10        # a note must sit untouched this long before the vault check or GLM acts on your edits
+inbox_quiet_seconds = 30       # the Inbox must sit untouched this long before its lines are read, so none is captured half-typed (0: no wait)
+followup_context = "#computer" # context tag on follow-up actions the agent proposes
+stale_action_days = 21         # digest flags #next actions older than this
+untouched_project_days = 14    # weekly review flags active projects with no change for this long
+
+[review]
+weekday = "sunday"             # the weekly review note appears on this day...
+hour = 8                       # ...from this hour
+vague_check = true             # ask GLM to flag vague next actions (needs remote_inference)
+someday_topics = true          # ask GLM to spot Someday topics with 3+ lines and propose a note for each
+
+[calendar]
+# Proton Calendar: read through its private share link (`set-secret calendar`); the agent cannot write to it, so
+# events it finds become "Add to Proton Calendar" actions. "folder" is Radicale: read its folder, add over CalDAV.
+enabled = false
+source = "ics"                 # "ics": a private share link, read only; "folder": Radicale storage plus CalDAV
+folder = "C:/path/to/calendar/radicale"   # Radicale's filesystem_folder (also for `calendar export`)
+user = "you"                   # Radicale user (the folder under collection-root)
+calendar = "Personal"          # Radicale: the calendar's display name
+url = "http://127.0.0.1:5232"  # Radicale: where it listens; needs `set-secret radicale` to add events
+alert_minutes = 10             # Radicale: phone alert before each event the agent adds
+day_start = "08:00"
+day_end = "22:00"
+min_free_minutes = 15
+cache_minutes = 30
+
+[telegram]
+enabled = false                # needs `set-secret telegram`, then `telegram setup`
+chat_id = 0                    # `telegram setup` prints yours; messages from any other chat are ignored
+
+[mail]
+# Proton through Bridge (docs/PRIVACY.md): the agent reads only mail you label GTD, changes nothing and never sends.
+# The password (Bridge's, or an agent inbox's app password) goes in `set-secret agent-mail`, never here.
+enabled = false
+source = "bridge"              # "bridge": Proton through Bridge; "inbox": a mailbox of the agent's own (docs/PRIVACY.md)
+host = "127.0.0.1"             # Bridge listens on this computer
+port = 1143                    # Bridge's IMAP port
+security = "starttls"          # as Bridge shows it: "starttls" or "tls"
+ca_file = ""                   # Bridge's exported cert.pem, trusted for this connection only
+user = ""                      # the username Bridge shows (your Proton address)
+folder = "Labels/GTD"          # the label the agent reads
+own_addresses = []             # your addresses, such as ["you@example.org"]
+check_minutes = 5              # how often the agent looks
+private_senders = []           # more senders the sensitive screen skips: domains ("mybank.com") or addresses
+restricted_domains = []       # locally configured organization domains; also blocks embedded addresses
+private_words = []             # more words or phrases it skips
+# Agent inbox only: address = this agent's alias when agents share it; auth_server = who writes the
+# Authentication-Results header it trusts (empty = host)
+
+[research]
+reports_dir = ""               # folder where research reports arrive (vault-relative or absolute); empty = off
+
+[documents]
+enabled = false                # whole .md files dropped into the Inbox folder (needs remote_inference)
+max_chars = 200000             # longer files get a "split it" note instead of a model call
+lead_days = 3                  # syllabus deadlines appear this many days before they are due
+exam_lead_days = 4             # exam study tasks appear this many days before the exam
+
+[models]
+jev = "typesafe/jev-1.13"      # routes Inbox lines (OpenRouter decisions API)
+glm = "z-ai/glm-5.3-flash"     # default for every job below
+documents = "z-ai/glm-5.3"     # reads whole Inbox files; under a cent for an hour-long transcript
+# One model per job, if you want: interpret, split, decided, outcome, vague_check, someday_topics, mail, draft,
+# after_event
+# interpret = "z-ai/glm-5.3-flash"
+
+[endpoints]
+# Each job can use another OpenAI-compatible chat-completions URL. Default: OpenRouter.
+# OpenRouter's privacy fields (no training, no retention) are sent only to OpenRouter.
+# default = "https://openrouter.ai/api/v1/chat/completions"
+# documents = "http://127.0.0.1:4000/v1/chat/completions"
+
+[endpoint_keys]
+# The saved secret each moved job uses: `set-secret router` stores one named "router".
+# documents = "router"
+
+[budget]
+monthly_usd = 0.0              # offline demo; remote inference requires provider-side hard spending cap
+warn_percent = 80              # TODAY warns from this share; at the cap only Inbox lines use a model
+
+[trust]
+# Proposal kinds you have promoted from judgment to bookkeeping: they apply without asking, logged in LOG with
+# Undo. Empty until a kind has earned it. Kinds: next_action, waiting_for, project_note, new_project,
+# someday_maybe, completion_report, calendar_event, decision, document, follow_up, promotion, someday_topic,
+# research_report, drop_knock, outcome_change, current_state
+bookkeeping = []
+
+[privacy]
+remote_inference = false       # true sends Inbox text (never #private notes) to OpenRouter

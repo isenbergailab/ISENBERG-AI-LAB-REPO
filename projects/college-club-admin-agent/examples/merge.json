@@ -1,0 +1,7 @@
+{
+  "title": "Example project update",
+  "label": "example-project-17",
+  "summary": "A synthetic project now includes a sample checklist.",
+  "merged": true,
+  "sources": [{"kind": "merged_pr", "url": "https://github.com/example/club/pull/17", "claim": "Sample checklist merged"}]
+}

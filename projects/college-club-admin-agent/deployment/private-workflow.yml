@@ -1,0 +1,72 @@
+name: Private Lab communications runner
+on:
+  workflow_dispatch:
+    inputs:
+      meeting_uuid:
+        description: Retry a consent-certified Zoom recording import
+        required: false
+        type: string
+  repository_dispatch:
+    types: [lab-merged, zoom-recording-ready]
+  schedule:
+    - cron: '0 13,14,16,17,18,19,20,21 * * *'
+concurrency:
+  group: club-admin-${{ github.event_name }}-${{ github.event.action || 'tick' }}
+  cancel-in-progress: false
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: isenbergailab/ISENBERG-AI-LAB-REPO
+          path: core
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: python -m pip install -r core/projects/college-club-admin-agent/requirements.txt
+      - name: Create temporary Google credentials
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON_B64: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON_B64 }}
+          GOOGLE_OAUTH_TOKEN_JSON_B64: ${{ secrets.GOOGLE_OAUTH_TOKEN_JSON_B64 }}
+        run: |
+          printf '%s' "$GOOGLE_SERVICE_ACCOUNT_JSON_B64" | base64 --decode > "$RUNNER_TEMP/club-sheet.json"
+          printf '%s' "$GOOGLE_OAUTH_TOKEN_JSON_B64" | base64 --decode > "$RUNNER_TEMP/club-drive.json"
+      - name: Run due work
+        working-directory: core/projects/college-club-admin-agent
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ runner.temp }}/club-sheet.json
+          GOOGLE_OAUTH_TOKEN_JSON: ${{ runner.temp }}/club-drive.json
+          CAMPAIGN_SHEET_ID: ${{ secrets.CAMPAIGN_SHEET_ID }}
+          DRIVE_CAMPAIGN_DRAFTS_FOLDER_ID: ${{ secrets.DRIVE_CAMPAIGN_DRAFTS_FOLDER_ID }}
+          DRIVE_RECORDINGS_FOLDER_ID: ${{ secrets.DRIVE_RECORDINGS_FOLDER_ID }}
+          DRIVE_TRANSCRIPTS_FOLDER_ID: ${{ secrets.DRIVE_TRANSCRIPTS_FOLDER_ID }}
+          DRIVE_TRANSCRIPTS_INBOX_ID: ${{ secrets.DRIVE_TRANSCRIPTS_INBOX_ID }}
+          DRIVE_APPROVED_SUMMARIES_FOLDER_ID: ${{ secrets.DRIVE_APPROVED_SUMMARIES_FOLDER_ID }}
+          DRIVE_LOGS_FOLDER_ID: ${{ secrets.DRIVE_LOGS_FOLDER_ID }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_MEMBER_CHANNEL_ID: ${{ secrets.SLACK_MEMBER_CHANNEL_ID }}
+          SLACK_APPROVAL_CHANNEL_ID: ${{ secrets.SLACK_APPROVAL_CHANNEL_ID }}
+          PRESIDENT_SLACK_ID: ${{ secrets.PRESIDENT_SLACK_ID }}
+          ZOOM_ACCOUNT_ID: ${{ secrets.ZOOM_ACCOUNT_ID }}
+          ZOOM_CLIENT_ID: ${{ secrets.ZOOM_CLIENT_ID }}
+          ZOOM_CLIENT_SECRET: ${{ secrets.ZOOM_CLIENT_SECRET }}
+          ZOOM_AUTHORIZED_HOST_ID: ${{ secrets.ZOOM_AUTHORIZED_HOST_ID }}
+          MERGE_PAYLOAD_JSON: ${{ toJSON(github.event.client_payload) }}
+          ZOOM_MEETING_UUID: ${{ github.event.client_payload.meeting_uuid }}
+          MANUAL_ZOOM_MEETING_UUID: ${{ inputs.meeting_uuid }}
+          APPS_SCRIPT_URL: ${{ secrets.APPS_SCRIPT_URL }}
+          WORKER_SHARED_SECRET: ${{ secrets.WORKER_SHARED_SECRET }}
+        run: |
+          if [ "${{ github.event.action }}" = 'lab-merged' ]; then
+            python deployment/run.py merge
+          elif [ "${{ github.event.action }}" = 'zoom-recording-ready' ]; then
+            python deployment/run.py zoom
+          elif [ -n "$MANUAL_ZOOM_MEETING_UUID" ]; then
+            ZOOM_MEETING_UUID="$MANUAL_ZOOM_MEETING_UUID" python deployment/run.py zoom
+          else
+            python deployment/run.py tick
+          fi

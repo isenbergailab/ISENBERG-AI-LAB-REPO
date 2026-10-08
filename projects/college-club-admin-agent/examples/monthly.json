@@ -1,0 +1,11 @@
+{
+  "title": "Example monthly report",
+  "label": "2026-09",
+  "month": "September 2026",
+  "shipped_projects": ["Sample checklist merged"],
+  "active_projects": ["Synthetic notebook experiment remains active"],
+  "meeting_takeaways": ["Members compared two public evaluation methods"],
+  "guardrail_activity": ["Reviewed source attribution practice"],
+  "incidents_failures": [],
+  "sources": [{"kind": "merged_pr", "url": "https://github.com/example/club/pull/17", "claim": "Sample checklist merged"}]
+}

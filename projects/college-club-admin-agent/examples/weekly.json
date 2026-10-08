@@ -1,0 +1,8 @@
+{
+  "title": "Weekly Lab meeting",
+  "label": "2026-10-13",
+  "date": "October 13, 2026",
+  "topics": ["optional demos", "AI news", "open discussion"],
+  "approval_deadline": "2026-10-12T20:00:00Z",
+  "sources": [{"kind": "president_preview", "url": "https://example.org/approved-preview", "claim": "Tuesday meeting runs 5:15–6 PM"}]
+}

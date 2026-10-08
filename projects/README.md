@@ -16,6 +16,7 @@ projects/
 | Project | Lead | Status | Description |
 |---|---|---|---|
 | [GTD Inbox Agent](gtd-inbox/README.md) | Unassigned | Proposed | Approval-first GTD with synthetic sandbox demo |
+| [College Club Admin Agent](college-club-admin-agent/README.md) | Isenberg AI Lab | In progress | Approval-gated social, onboarding, and meeting operations |
 
 ## Starting a Project
 

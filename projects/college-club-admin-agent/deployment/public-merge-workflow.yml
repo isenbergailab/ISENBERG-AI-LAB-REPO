@@ -1,0 +1,26 @@
+name: Signal merged Lab changes
+on:
+  pull_request:
+    types: [closed]
+jobs:
+  signal:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch into private deployment repository
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PRIVATE_DEPLOYMENT_TOKEN }}
+          script: |
+            const pr = context.payload.pull_request;
+            await github.rest.repos.createDispatchEvent({
+              owner: 'isenbergailab',
+              repo: 'college-club-admin-private',
+              event_type: 'lab-merged',
+              client_payload: {
+                merged: true,
+                number: pr.number,
+                title: pr.title,
+                url: pr.html_url
+              }
+            });

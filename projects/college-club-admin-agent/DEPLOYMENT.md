@@ -32,7 +32,7 @@ Create the OpenRouter organization from Lab Gmail. Add each president through th
 Open the existing interest response Sheet as Lab Gmail. Paste `apps-script/Code.gs` into its bound Apps Script project. Set Script Properties:
 
 ```text
-EMAIL_COLUMN_NAME = Email Address
+EMAIL_COLUMN_NAME = UMass email
 SLACK_JOIN_URL = current Lab Slack invite
 GUIDE_URL = current new-member guide URL
 REPO_URL = https://github.com/isenbergailab/ISENBERG-AI-LAB-REPO

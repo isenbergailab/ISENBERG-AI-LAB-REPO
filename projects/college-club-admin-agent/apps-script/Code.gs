@@ -30,7 +30,7 @@ function onInterestFormSubmit(e) {
     const sheet = e.range.getSheet();
     const row = e.range.getRow();
     const map = columns_(sheet);
-    const emailHeader = (PropertiesService.getScriptProperties().getProperty('EMAIL_COLUMN_NAME') || 'Email Address').toLowerCase();
+    const emailHeader = property_('EMAIL_COLUMN_NAME').trim().toLowerCase();
     const emailColumn = map[emailHeader];
     if (!emailColumn) throw new Error('Email column missing: ' + emailHeader);
     const email = String(sheet.getRange(row, emailColumn).getValue()).trim().toLowerCase();

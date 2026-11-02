@@ -15,9 +15,9 @@ import time
 from typing import Any
 
 from .core import Settings
-from .credentials import get_secret
+from .credentials import MAIL_SECRET, get_secret
 
-SECRET = "agent-mail"
+SECRET = MAIL_SECRET
 SENT = "Sent"      # Bridge: the agent reads only the reply headers here
 DRAFTS = "Drafts"  # Bridge: the one folder the agent writes into (APPEND, never sent)
 TIMEOUT_SECONDS = 30
@@ -27,6 +27,14 @@ MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", 
 
 class MailError(Exception):
     """A mail problem the user can fix, worded as the fix."""
+
+
+class BridgeClosed(MailError):
+    """Nothing answers where Bridge listens: it is closed or still starting. Opening it fixes this."""
+
+
+class MailRefused(MailError):
+    """The server answered and said no (a full mailbox, a message it won't take). Trying again later may work."""
 
 
 def _quoted(folder: str) -> str:
@@ -97,12 +105,12 @@ class Mailbox:
                             "IMAP over TLS, usually 993.") from None
         except TimeoutError:
             if self._bridge():
-                raise MailError(self._bridge_closed(where)) from None
+                raise BridgeClosed(self._bridge_closed(where)) from None
             raise MailError(f"{where} didn't answer within {TIMEOUT_SECONDS} seconds. Check [mail] host and port, "
                             "and the network.") from None
         except (OSError, imaplib.IMAP4.error) as exc:
             if self._bridge():
-                raise MailError(self._bridge_closed(where)) from None
+                raise BridgeClosed(self._bridge_closed(where)) from None
             reason = exc.strerror if isinstance(exc, OSError) and exc.strerror else str(exc)
             raise MailError(f"Can't reach {where} ({reason}). Check [mail] host and port, and the network.") from None
         try:
@@ -225,9 +233,13 @@ class Mailbox:
         """The one write the agent makes in the user's own mailbox: a draft for him to send himself. Never sent."""
         if self._bridge() and folder != DRAFTS:
             raise MailError(f"Through Bridge the agent writes only into {DRAFTS}")
-        typ, _ = self._session().append(_quoted(folder), "(\\Draft)", imaplib.Time2Internaldate(time.time()), raw)
+        try:
+            typ, _ = self._session().append(_quoted(folder), "(\\Draft)", imaplib.Time2Internaldate(time.time()), raw)
+        except (OSError, imaplib.IMAP4.error):  # the connection ended before the server answered
+            raise MailError("The connection to the mailbox dropped while saving a draft. The draft is kept and saved "
+                            "when it is back") from None
         if typ != "OK":
-            raise MailError(f"The mailbox wouldn't take a draft into {folder}")
+            raise MailRefused(f"The mailbox wouldn't take a draft into {folder}")
 
     def _ensure(self, folder: str) -> None:
         if folder in self._folders:

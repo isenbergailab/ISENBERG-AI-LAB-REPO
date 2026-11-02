@@ -1,0 +1,20 @@
+{
+  "eligible": true,
+  "source_id": "image-eat-1",
+  "source_type": "image",
+  "fields": {
+    "Prompt": "食べる",
+    "Answer": "to eat",
+    "Notes": "Reading: たべる",
+    "Example": ["毎朝、家族と朝ご飯を食べる。", "I eat breakfast with my family every morning."]
+  },
+  "provenance": {
+    "Prompt": "source",
+    "Answer": "source",
+    "Notes": "source",
+    "Example": "reference"
+  },
+  "uncertain_fields": [],
+  "review_required": false,
+  "issues": []
+}

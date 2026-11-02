@@ -1,0 +1,15 @@
+{
+  "eligible": true,
+  "source_id": "malformed-1",
+  "source_type": "text",
+  "fields": {
+    "Prompt": "missing roles",
+    "Answer": "invalid"
+  },
+  "provenance": {
+    "Prompt": "source",
+    "Answer": "source",
+    "Notes": "source",
+    "Example": "source"
+  }
+}

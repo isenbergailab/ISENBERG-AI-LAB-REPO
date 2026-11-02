@@ -10,21 +10,25 @@ from typing import Any
 
 from . import radicale
 from .calendar_ics import Event, fetch_ics, free_gaps, parse_events, rrule_from_tasks
-from .clarification import CONTEXT_HEADING, ROUTE_LABEL, compile_ops, new_marker, project_note_text
+from .clarification import CONTEXT_HEADING, compile_ops, new_marker, project_note_text
 from .core import CONTEXTS, atomic_replace, digest, parse_captures, read_snapshot, write_owned
 from .credentials import get_secret
-from .dates import find_time
+from .dates import find_time, fmt_day as _fmt_day
 from .decisions import decisions_note, open_questions
 from .markdown import parse_frontmatter, split_frontmatter
 from .providers import ProviderError
-from .ops import OpError
+from .ops import OpError, section_text
 from .tasks import (TAG_RE, Task, clean_text, format_task, text_before_dates, with_date, with_dependency, with_id,
                     without_dependency)
 from .vault import Project, Vault, project_key
 from .workflow import PROPOSAL_VERSION, Agent, _review_text
 from .documents import DocumentIntake
-from .drafts import address as mail_address, draft_op, write_draft
+from .drafts import Outbox, address as mail_address, draft_op, write_draft
 from .mail import MailIntake, contact_notes, mail_today
+from .pings import Pings
+from .planner import Planner
+from .reference_links import ReferenceLinker
+from .trust import TrustReport
 from .watch import Watcher
 from .current_state import NEXT_EVENT, PLACEHOLDER, SECTION, events_by_project, next_events, section_body, state_text
 
@@ -44,10 +48,7 @@ AUTO_END_RE = re.compile(r"<!-- gtd-agent:auto-end(?: sha=([0-9a-f]{12}))? -->")
 STRAY_SUFFIXES = {".zip", ".tmp", ".bak", ".crdownload", ".part"}
 CHECK_REFRESH_MINUTES = 15  # TODAY's "Checked" time moves at least this often while the agent runs
 RECOVERED_SHOWN_HOURS = 24
-
-
-def _fmt_day(day: date) -> str:
-    return f"{day.strftime('%a')} {day.strftime('%b')} {day.day}"
+TODAY_PARKED_STATUSES = {"someday", "done", "dropped"}
 
 
 def _link_text(value: Any) -> str:
@@ -60,11 +61,12 @@ def _fmt_when(moment: datetime, now: datetime) -> str:
     return f"{moment:%H:%M}" if moment.date() == now.date() else f"{_fmt_day(moment.date())} {moment:%H:%M}"
 
 
-def not_in_views(settings: Any) -> str:
-    """One Tasks filter that keeps the Inbox, agent notes, reference, archive and review notes out of a view.
+def not_in_views(settings: Any, vault: Vault) -> str:
+    """Keep non-work folders and parked projects (including their subnotes) out of TODAY.
     A regex anchored at the start: 'path does not include _agent' would also hide GTD_AGENT (Tasks matches
     case-insensitively)."""
     folders = [settings.inbox_dir, settings.agent_dir, settings.reference_dir, settings.archive_dir, settings.reviews_dir]
+    folders += sorted(p.folder for p in vault.projects.values() if p.status in TODAY_PARKED_STATUSES)
     names = "|".join(re.escape(folder).replace("/", "\\/") for folder in folders if folder)
     return f"path regex does not match /^({names})\\//"
 
@@ -78,32 +80,20 @@ class Housekeeper:
         self.settings = agent.settings
         self.ledger = agent.ledger
         self._near: tuple[list[Event], str | None] | None = None  # calendar events around now, read once per run
+        self._ics: tuple[str | None, str | None] | None = None  # the calendar file's text, fetched once per run
 
     # ------------------------------------------------------------ helpers
     def _where(self, vault: Vault, task: Task) -> str:
-        project = vault.project_for_path(task.path)
-        if project is not None:
-            return f"[[{project.key}]]"
-        area = vault.area_for_path(task.path)
-        if area is not None:
-            return f"[[{area.key}]]"
-        linked = next((link for link in task.links if link in vault.areas), None)
-        if linked:
-            return f"[[{linked}]]"
-        return "[[SINGLE_ACTIONS]]"
+        return vault.where(task)
 
     def _task_line(self, vault: Vault, task: Task, extra: str = "") -> str:
-        title = task.title
-        for link in task.links:
-            if link in vault.areas:
-                title = title.replace(link, "").strip()
-        title = re.sub(r"\s+", " ", title).strip() or task.description
-        return f"- {_review_text(title)}{extra} · {self._where(vault, task)}"
+        return f"- {_review_text(vault.display_title(task))}{extra} · {self._where(vault, task)}"
 
     def _propose(self, origin: str, key: str, proposal: dict[str, Any]) -> bool:
         if self.ledger.get_by_key(key) is not None:
             return False
         proposal["engine_version"] = PROPOSAL_VERSION
+        self.agent.note_conflicts(proposal)
         if self.settings.mode == "approval":
             self.ledger.upsert(origin, key, proposal)
         return True
@@ -819,7 +809,7 @@ class Housekeeper:
                     or not self.agent.budget.allows("after_event"):
                 continue  # asked again once the model can answer
             steps = [t for t in project.tasks if t.is_open and not t.is_waiting and t.section.casefold() == "steps"
-                     and t.heading.casefold() != "done" and not t.indent]
+                     and t.heading.casefold() != "done" and not t.indent and not vault.is_private_task(t)]
             try:
                 answer = self.agent.provider.after_event(project.key, event["title"], question["answer"],
                                                          [step.title for step in steps], today)
@@ -876,8 +866,14 @@ class Housekeeper:
 
     # ------------------------------------------------------------ calendar
     def calendar_events(self, start: datetime, end: datetime) -> tuple[list[Event], str | None]:
+        events, warning = self.calendar_read(start, end)
+        return events or [], warning
+
+    def calendar_read(self, start: datetime, end: datetime) -> tuple[list[Event] | None, str | None]:
+        """The calendar's events in [start, end) and a warning. None for the events when the calendar is off or
+        could not be read, which is not the same as a day with nothing on it."""
         if not self.settings.calendar_enabled:
-            return [], None
+            return None, None
         if self.settings.calendar_source == "folder":
             s = self.settings
             try:
@@ -885,63 +881,35 @@ class Housekeeper:
                                              s.calendar_name)
                 return parse_events(radicale.read_items(collection), start, end, s.timezone), None
             except radicale.CalendarError as exc:
-                return [], str(exc)
+                return None, str(exc)
             except (ValueError, KeyError) as exc:
-                return [], f"Calendar could not be read ({type(exc).__name__})"
-        url = get_secret("calendar", self.settings.state_dir)
-        if not url:
-            return [], "Calendar is enabled, but no link is saved. Run: run.ps1 set-secret calendar"
-        text, warning = fetch_ics(url, self.settings.state_dir / "calendar" / "cache.ics",
-                                  self.settings.calendar_cache_minutes)
+                return None, f"Calendar could not be read ({type(exc).__name__})"
+        if self._ics is None:  # one fetch a run: a calendar that cannot be reached is tried once, not once per use
+            url = get_secret("calendar", self.settings.state_dir)
+            self._ics = fetch_ics(url, self.settings.state_dir / "calendar" / "cache.ics",
+                                  self.settings.calendar_cache_minutes) if url else (
+                None, "Calendar is enabled, but no link is saved. Run: run.ps1 set-secret calendar")
+        text, warning = self._ics
         if text is None:
-            return [], warning
+            return None, warning
         try:
             return parse_events(text, start, end, self.settings.timezone), warning
         except (ValueError, KeyError) as exc:
-            return [], f"Calendar could not be read ({type(exc).__name__})"
+            return None, f"Calendar could not be read ({type(exc).__name__})"
 
     # ------------------------------------------------------------ daily digest
     def report_lines(self, vault: Vault, now: datetime, today: date) -> list[str]:
-        """The short report: today's calendar and free time, the Inbox and APPROVAL counts, stuck projects."""
+        """The short report: Inbox and APPROVAL counts, mail, and stuck projects."""
         s = self.settings
         lines: list[str] = []
-        actionable = vault.actionable(today)
-        if not s.calendar_enabled:
-            lines.append("- Calendar off. Turn it on under `[calendar]` in config.toml (see README).")
-        else:
-            day_start = datetime.combine(today, datetime.min.time())
-            next_day = day_start + timedelta(days=1)
-            events, warning = self.calendar_events(day_start, next_day)
-
-            def span(event: Event) -> str:  # a timed event can start before today or end after it
-                if event.start < day_start and event.end > next_day:
-                    return "all day"
-                if event.start < day_start:
-                    return f"until {event.end:%H:%M}"
-                if event.end > next_day:
-                    return f"{event.start:%H:%M} until {event.end:%a %H:%M}"
-                return f"{event.start:%H:%M}–{event.end:%H:%M}"
-            parts = [f"all day {_review_text(e.summary)}" for e in events if e.all_day]
-            parts += [f"{span(e)} {_review_text(e.summary)}" for e in events if not e.all_day]
-            lines.append("- Calendar: " + (" · ".join(parts) if parts else "nothing scheduled today")
-                         + (f" _({warning})_" if warning else ""))
-            gaps = free_gaps(events, today, s.day_start, s.day_end, now if now.date() == today else None,
-                             s.min_free_minutes)
-            sized = sorted((t for t in actionable if t.minutes), key=lambda t: (t.due or date.max, -t.minutes))
-            shown = []
-            for begin, finish in gaps[:3]:
-                minutes = int((finish - begin).total_seconds() // 60)
-                fits = [t for t in sized if t.minutes <= minutes][:2]
-                shown.append(f"{begin:%H:%M}–{finish:%H:%M}" + (" fits " + ", ".join(
-                    f"{_review_text(t.title)} ({t.minutes}m)" for t in fits) if fits else ""))
-            if shown:
-                lines.append("- Free: " + " · ".join(shown))
-        inbox_path = s.vault_path(s.inbox)
-        inbox_count = len(parse_captures(read_snapshot(inbox_path), s.max_capture_chars)) if inbox_path.exists() else 0
+        inbox_count = self.inbox_count()
         pending = self.ledger.count_pending()
         lines.append(f"- [[INBOX]]: {inbox_count} line{'s' if inbox_count != 1 else ''} · [[APPROVAL]]: {pending} waiting")
         if s.mail_enabled:
             lines.append("- Mail today: " + mail_today(self.ledger, today))
+        drafts_waiting = Outbox(self.agent).today_line()
+        if drafts_waiting:
+            lines.append(drafts_waiting)
         no_next = [p.key for p in vault.active_projects() if not vault.open_next(p)]
         past_due = [p.key for p in vault.active_projects() if p.due and p.due < today]
         if no_next:
@@ -956,27 +924,73 @@ class Housekeeper:
                          f"agent stopped updating it there. To hand it back, write `{PLACEHOLDER}` in the section.")
         return lines
 
-    def _query(self, *lines: str) -> list[str]:
+    def planning_lines(self, vault: Vault, now: datetime, today: date) -> list[str]:
+        """Keep planning information below the actionable sections."""
+        s = self.settings
+        lines: list[str] = []
+        read = None
+        if s.calendar_enabled:
+            day_start = datetime.combine(today, datetime.min.time())
+            next_day = day_start + timedelta(days=1)
+            read, _ = self.calendar_read(day_start, next_day)
+            events = read or []
+            gaps = free_gaps(events, today, s.day_start, s.day_end, now if now.date() == today else None,
+                             s.min_free_minutes)
+            actionable = vault.actionable(today)
+            sized = sorted((t for t in actionable if t.minutes), key=lambda t: (t.due or date.max, -t.minutes))
+            shown = []
+            for begin, finish in gaps[:3]:
+                minutes = int((finish - begin).total_seconds() // 60)
+                fits = [t for t in sized if t.minutes <= minutes][:2]
+                shown.append(f"{begin:%H:%M}–{finish:%H:%M}" + (" fits " + ", ".join(
+                    f"{_review_text(t.title)} ({t.minutes}m)" for t in fits) if fits else ""))
+            if shown:
+                lines.append("- Free: " + " · ".join(shown))
+        planner = Planner(self.agent, self.calendar_read)
+        lines += planner.lines(vault, now, today, read)
+        lines.append(f"- Load: {planner.load_text(vault, now, today)}")
+        return lines
+
+    def _query(self, vault: Vault, *lines: str) -> list[str]:
         filters = [line for line in lines if not line.startswith("sort by")]
         sorting = [line for line in lines if line.startswith("sort by")]
-        return ["```tasks", "not done", *filters, not_in_views(self.settings), *sorting, "```"]
+        return ["```tasks", "not done", *filters, not_in_views(self.settings, vault), *sorting,
+                "hide id", "hide created date", "hide due date", "hide tags", "```"]
+
+    @staticmethod
+    def due_tasks(vault: Vault, today: date) -> list[Task]:
+        """Open tasks that are yours and due today or before."""
+        return [t for t in vault.tasks if t.is_open and not t.is_waiting and t.due and t.due <= today
+                and vault.status_for(t.path) not in TODAY_PARKED_STATUSES]
+
+    @staticmethod
+    def follow_ups_due(vault: Vault, today: date) -> list[Task]:
+        """Waits that are due for a follow-up: open, due today or before, not replied to and not blocked."""
+        open_ids = {t.task_id for t in vault.tasks if t.task_id and t.is_open}
+        return [t for t in vault.tasks if t.is_open and t.is_waiting and not t.has("#replied") and t.due
+                and t.due <= today and vault.status_for(t.path) not in TODAY_PARKED_STATUSES
+                and not any(task_id in open_ids for task_id in t.depends_on)]
+
+    def inbox_count(self) -> int:
+        """How many lines wait in the Inbox."""
+        path = self.settings.vault_path(self.settings.inbox)
+        return len(parse_captures(read_snapshot(path), self.settings.max_capture_chars)) if path.exists() else 0
 
     def needs_you(self, vault: Vault, today: date) -> list[tuple[str, list[str]]]:
         """Open items that are due or ask for a decision, each class in its own section (empty ones left out)."""
         s = self.settings
         sections: list[tuple[str, list[str]]] = []
-        due = [t for t in vault.tasks if t.is_open and not t.is_waiting and t.due and t.due <= today]
+        due = self.due_tasks(vault, today)
         if due:
             sections.append((f"Overdue and due today ({len(due)})",
-                             self._query("due before tomorrow", "tags do not include #waiting", "sort by due")))
-        open_ids = {t.task_id for t in vault.tasks if t.task_id and t.is_open}
-        follow = [t for t in vault.tasks if t.is_open and t.is_waiting and not t.has("#replied") and t.due
-                  and t.due <= today and not any(task_id in open_ids for task_id in t.depends_on)]
+                             self._query(vault, "due before tomorrow", "tags do not include #waiting", "sort by due")))
+        follow = self.follow_ups_due(vault, today)
         if follow:
             sections.append((f"Follow-ups due ({len(follow)})",
-                             self._query("tags include #waiting", "tags do not include #replied", "is not blocked",
+                             self._query(vault, "tags include #waiting", "tags do not include #replied", "is not blocked",
                                          "due before tomorrow", "sort by due")))
-        stalled = [t for t in vault.waiting() if not t.has("#replied") and self.follow_count(t) >= FOLLOW_UP_LIMIT]
+        stalled = [t for t in vault.waiting() if not t.has("#replied") and self.follow_count(t) >= FOLLOW_UP_LIMIT
+                   and vault.status_for(t.path) not in TODAY_PARKED_STATUSES]
         if stalled:
             sections.append((f"No answer after {FOLLOW_UP_LIMIT} follow-ups ({len(stalled)})", [
                 f"- {_review_text(t.title)} in {self._where(vault, t)}: call, escalate or drop it." for t in stalled]))
@@ -989,21 +1003,9 @@ class Housekeeper:
         if questions:
             sections.append((f"Open questions ({len(questions)})", questions))
         everything = self.ledger.pending()
-        pending = [row for row in everything if row["origin"] not in {"drop", "lint", "state"}]
         handovers = [row for row in everything if row["origin"] == "state"]
         drops = [row for row in everything if row["origin"] == "drop"]
         choices = [row for row in everything if row["origin"] == "lint"]
-        if pending:
-            rows = []
-            for row in pending[:APPROVAL_SHOWN]:
-                proposal = json.loads(row["proposal_json"])
-                label = ROUTE_LABEL.get(proposal["kind"], proposal["kind"].replace("_", " ").capitalize())
-                title = _link_text(proposal.get("title") or proposal.get("source") or proposal["kind"])
-                where = f" → {_review_text(proposal['summary'])}" if proposal.get("summary") else ""
-                rows.append(f"- [[APPROVAL#^p-{row['id']}|{_link_text(label)} · {title}]]{where}")
-            if len(pending) > APPROVAL_SHOWN:
-                rows.append(f"- …and {len(pending) - APPROVAL_SHOWN} more in [[APPROVAL]]")
-            sections.append((f"Waiting in APPROVAL ({len(pending)})", rows))
         if drops:
             sections.append((f"Drop reasons asked ({len(drops)})", [
                 f"- [[APPROVAL#^p-{row['id']}|Why drop · {_link_text(json.loads(row['proposal_json'])['title'])}]]"
@@ -1041,41 +1043,93 @@ class Housekeeper:
             count = sum(1 for t in actionable if t.context == context)
             if count:
                 sections.append((f"@{context[1:]} ({count})",
-                                 self._query(f"tags include {context}", *scope, "sort by due", "sort by path")))
+                                 self._query(vault, f"tags include {context}", *scope, "sort by due", "sort by path")))
         loose = [t for t in actionable if t.context is None]
         if loose:
             sections.append((f"No context tag ({len(loose)})",
-                             self._query(*(f"tags do not include {c}" for c in CONTEXTS), *scope)))
+                             self._query(vault, *(f"tags do not include {c}" for c in CONTEXTS), *scope)))
         return sections
+
+    def queued_project_query(self, vault: Vault) -> list[str]:
+        """Show active project backlog without changing which tasks are selected as next."""
+        folders = sorted(p.folder for p in vault.active_projects())
+        names = "|".join(re.escape(folder).replace("/", "\\/") for folder in folders)
+        scope = f"path regex matches /^({names})\\//" if names else "path regex matches /^$/"
+        query = self._query(vault, scope, "tags do not include #next", "tags do not include #waiting",
+                            "starts before tomorrow", "group by path", "sort by due")
+        return query
+
+    def refresh_next_actions(self, vault: Vault) -> list[str]:
+        """Refresh standard NEXT_ACTIONS sections from the same live filters as TODAY."""
+        rel = str(Path(self.settings.single_actions).parent / "NEXT_ACTIONS.md").replace("\\", "/")
+        single = self.settings.single_actions.removesuffix(".md")
+        scope = ["starts before tomorrow", "tags do not include #waiting",
+                 f"(tags include #next) OR (path includes {single})"]
+        sections = [("Due in the next 7 days", self._query(vault, "due before in 7 days", *scope, "sort by due"))]
+        sections += [(f"@{context[1:]}", self._query(vault, f"tags include {context}", *scope,
+                                                   "sort by due", "sort by path")) for context in CONTEXTS]
+        sections += [("Quick wins (15 minutes or less)", self._query(vault, "(tags include #5m) OR (tags include #15m)",
+                                                                    *scope, "sort by due")),
+                     ("Needs a context tag", self._query(vault, *(f"tags do not include {c}" for c in CONTEXTS), *scope)),
+                     ("Queued project steps", ["These steps remain queued. Next actions above are selected for current work.",
+                                                "", *self.queued_project_query(vault)])]
+        path = self.settings.vault_path(rel)
+        snapshot = read_snapshot(path) if path.exists() else None
+        if snapshot is None:
+            lines = ["# NEXT_ACTIONS", "", "Live task views, refreshed by the GTD agent. Tick tasks to update their source notes.", ""]
+            for heading, body in sections:
+                lines += [f"## {heading}", *body, ""]
+            ops = [{"op": "create_file", "path": rel, "text": "\n".join(lines)}]
+        else:
+            old_lines = snapshot.text.split("\n")
+            ops = [{"op": "set_section", "path": rel, "section": heading, "text": "\n".join(body),
+                    "old": section_text(old_lines, heading) or "", "ensure": True}
+                   for heading, body in sections if (section_text(old_lines, heading) or "") != "\n".join(body)]
+        if not ops:
+            return []
+        self.agent.apply_ops(ops, "auto", "next-actions-view-" + digest(json.dumps(ops))[:16],
+                             "Refreshed NEXT_ACTIONS project queries")
+        return []
 
     def digest(self, vault: Vault, now: datetime | None = None) -> list[str]:
         now = now or datetime.now()
         today = self.agent.today()
         s = self.settings
-        lines = ["## Report", *self.report_lines(vault, now, today), "", "## Needs you"]
+        lines = ["## Report", *self.report_lines(vault, now, today), ""]
         needs = self.needs_you(vault, today)
-        for title, items in needs:
-            lines += [f"### {title}", *items, ""]
-        if not needs:
-            lines += ["Nothing due and nothing to decide.", ""]
+        due = next(((title, items) for title, items in needs if title.startswith("Overdue and due today")), None)
+        lines.append("## " + (due[0] if due else "Overdue and due today"))
+        lines += [*(due[1] if due else ["Nothing overdue or due today."]), ""]
         lines.append("## Next actions")
         actions = self.next_action_sections(vault, today)
         for title, items in actions:
             lines += [f"### {title}", *items, ""]
         if not actions:
             lines += ["Nothing to do right now. Add a `#next` step to an active project.", ""]
-        body = "\n".join(lines)
+        queued = [t for t in vault.tasks if t.is_open and not t.is_next and not t.is_waiting
+                  and vault.status_for(t.path) == "active" and (t.start is None or t.start <= today)]
+        lines += [f"## Queued project steps ({len(queued)})", "These steps remain queued. Next actions above are selected for current work.",
+                  "", *self.queued_project_query(vault), ""]
+        other = [(title, items) for title, items in needs if not title.startswith("Overdue and due today")]
+        if other:
+            lines += ["## Other reminders", ""]
+            for title, items in other:
+                lines += [f"### {title}", *items, ""]
+        lines += ["## Planning", *self.planning_lines(vault, now, today), ""]
         budget_line = self.agent.budget.report_line()
         health = self.health_lines(now) + ([budget_line] if budget_line else [])
+        status_token = "{GTD_AGENT_CHECK_TIME}"
+        lines += ["## Agent status", status_token, *health, ""]
+        body = "\n".join(lines)
         bucket = now.replace(minute=now.minute - now.minute % CHECK_REFRESH_MINUTES, second=0, microsecond=0)
         stamp_key = "digest_hash"
         signature = digest(today.isoformat() + bucket.isoformat() + "\n".join(health) + body)
         path = s.vault_path(s.today_note)
         if self.ledger.kv_get(stamp_key) == signature and path.exists():
             return []
-        header = [f"# TODAY", "", f"{now:%A, %B} {now.day} · Checked {now:%H:%M} by the GTD agent. Tick tasks here "
-                  "and they change where they live; the rest of this note is rewritten.", *health, ""]
-        write_owned(path, "\n".join(header) + "\n" + body, s.state_dir)
+        status_line = (f"{now:%A, %B} {now.day} · Checked {now:%H:%M} by the GTD agent. Tick tasks here "
+                       "and they change where they live; the rest of this note is rewritten.")
+        write_owned(path, "# TODAY\n\n" + body.replace(status_token, status_line), s.state_dir)
         self.ledger.kv_set(stamp_key, signature)
         return []
 
@@ -1300,8 +1354,7 @@ class Housekeeper:
                                key=lambda t: t.due)
         no_date_waits = [t for t in vault.waiting() if t.due is None]
         s = self.settings
-        inbox_path = s.vault_path(s.inbox)
-        inbox_count = len(parse_captures(read_snapshot(inbox_path), s.max_capture_chars)) if inbox_path.exists() else 0
+        inbox_count = self.inbox_count()
         horizon_end = today + timedelta(days=14)
         events, warning = self.calendar_events(datetime.combine(today, datetime.min.time()),
                                                datetime.combine(horizon_end, datetime.min.time()))
@@ -1338,6 +1391,8 @@ class Housekeeper:
             lines += ["### Possibly vague (model suggestions)", *vague, ""]
         lines += ["### Inbox and approvals",
                   f"- [[INBOX]]: {inbox_count} · [[APPROVAL]]: {self.ledger.count_pending()} waiting", ""]
+        lines += ["### Load", "- " + Planner(self.agent, self.calendar_read).load_text(vault, datetime.now(), today), ""]
+        lines += ["### Trust", *TrustReport(self.agent).lines(monday, sunday), ""]
         lines += ["### Coming up (14 days)"]
         if warning:
             lines.append(f"- _{warning}_")
@@ -1437,6 +1492,7 @@ class Housekeeper:
 
     def run(self, now: datetime | None = None) -> list[str]:
         self._near = None
+        self._ics = None
         messages: list[str] = []
         self._step("agent notes", self.ensure_agent_notes)
         vault = self._step("reading the vault", self.agent.vault)
@@ -1455,16 +1511,21 @@ class Housekeeper:
         messages += self._step("calendar alerts", self.timed_duties, vault) or []
         messages += self._step("research reports", self.research, vault) or []
         messages += self._step("mail", MailIntake(self).run, vault, now) or []
+        messages += self._step("draft outbox", Outbox(self.agent).flush) or []
         messages += self._step("Inbox files", DocumentIntake(self).run, vault, now) or []
+        messages += self._step("TOPIC links", ReferenceLinker(self.agent).run, vault) or []
         checked = self._step("vault check", self.lint, vault) or []
         messages += checked
         if any(message.startswith("Fixed ") for message in checked):
             vault = self._step("reading the vault", self.agent.vault) or vault
         messages += self._step("current state", self.current_states, vault, now) or []
         messages += self._step("after events", self.after_events, vault, now) or []
+        messages += self._step("plan", Planner(self.agent, self.calendar_read).run, vault, now) or []
+        messages += self._step("NEXT_ACTIONS", self.refresh_next_actions, vault) or []
         messages += self._step("TODAY", self.digest, vault, now) or []
         messages += self._step("weekly review", self.weekly, vault, now) or []
         if self.settings.mode == "approval":
             messages += [f"Trusted: {outcome}" for outcome in self._step("trusted kinds", self.agent.apply_trusted) or []]
             self._step("APPROVAL", self.agent.render_reviews)
+        messages += self._step("phone pings", Pings(self).run, vault, now) or []
         return messages

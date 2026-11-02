@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "export_filename": "Alpha.tsv",
+  "card_count": 2,
+  "language_profile": "Japanese vocabulary",
+  "batch": {
+    "adapter": "hermes",
+    "identity": "hermes-exampleidentity01",
+    "identity_scope": "user-and-conversation",
+    "finalized_by": "explicit",
+    "duplicate_policy": "reject",
+    "duplicate_outcomes": []
+  },
+  "cards": [
+    {
+      "row": 1,
+      "source_id": "example-text-1",
+      "source_type": "text",
+      "prompt": "食べる",
+      "provenance": {
+        "Prompt": "source",
+        "Answer": "source",
+        "Notes": "source",
+        "Example": "generated"
+      },
+      "uncertain_fields": [],
+      "review_required": true,
+      "issues": ["Example sentence was generated for demonstration."]
+    },
+    {
+      "row": 2,
+      "source_id": "example-text-2",
+      "source_type": "text",
+      "prompt": "猫",
+      "provenance": {
+        "Prompt": "source",
+        "Answer": "source",
+        "Notes": "source",
+        "Example": "generated"
+      },
+      "uncertain_fields": [],
+      "review_required": true,
+      "issues": ["Example sentence was generated for demonstration."]
+    }
+  ],
+  "rejected_sources": []
+}

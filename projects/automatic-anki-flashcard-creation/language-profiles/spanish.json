@@ -1,0 +1,20 @@
+{
+  "name": "Spanish vocabulary",
+  "target_language": "es",
+  "explanation_language": "en",
+  "roles": {
+    "Prompt": "Spanish dictionary headword or fixed phrase, preserving accents.",
+    "Answer": "Concise common English meaning or meanings.",
+    "Notes": "Part of speech; noun gender and plural where useful; irregular verb or regional usage notes only when relevant.",
+    "Example": "A complete natural Spanish sentence, then <br>, then a complete English translation."
+  },
+  "rules": [
+    "Preserve diacritics and the submitted regional variety when identifiable.",
+    "For nouns, include grammatical gender in Notes instead of adding an article to Answer.",
+    "For verbs, use the infinitive as Prompt unless the source is explicitly teaching a conjugated form.",
+    "Separate genuinely different meanings with semicolons and avoid redundant synonyms.",
+    "Prefer a source example; enrich from a reputable dictionary only when missing; generate only as a last resort."
+  ],
+  "example_separator": "<br>",
+  "approved_reference_domains": ["dle.rae.es", "spanishdict.com"]
+}

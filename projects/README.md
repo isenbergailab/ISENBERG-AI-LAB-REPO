@@ -15,6 +15,7 @@ projects/
 
 | Project | Lead | Status | Description |
 |---|---|---|---|
+| [Automatic Anki Flashcard Creation](automatic-anki-flashcard-creation/README.md) | Unassigned | Proposed | Reviewed vocabulary TSV exports and offline synthetic tests |
 | [GTD Inbox Agent](gtd-inbox/README.md) | Unassigned | Proposed | Approval-first GTD with synthetic sandbox demo |
 | [College Club Admin Agent](college-club-admin-agent/README.md) | Isenberg AI Lab | In progress | Approval-gated social, onboarding, and meeting operations |
 

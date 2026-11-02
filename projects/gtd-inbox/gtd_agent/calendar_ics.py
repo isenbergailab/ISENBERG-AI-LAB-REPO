@@ -27,6 +27,26 @@ class Event:
     busy: bool
     uid: str = ""
     notes: str = ""  # DESCRIPTION, one line
+    private: bool = False  # CLASS:PRIVATE or CLASS:CONFIDENTIAL: never named outside the calendar
+
+
+def event_span(event: Event, day_start: datetime) -> str:
+    """The time an event takes on the day that starts at `day_start`: both times, 'until 07:00' when it began
+    earlier, '23:00 until Fri 01:00' when it runs on, 'all day' when it covers the whole day."""
+    next_day = day_start + timedelta(days=1)
+    if event.start < day_start and event.end >= next_day:
+        return "all day"
+    if event.start < day_start:
+        return f"until {event.end:%H:%M}"
+    if event.end > next_day:
+        return f"{event.start:%H:%M} until {event.end:%a %H:%M}"
+    return f"{event.start:%H:%M}–{event.end:%H:%M}"
+
+
+def overlapping(events: list[Event], start: datetime, end: datetime) -> list[Event]:
+    """The busy, timed events that share time with [start, end). Back to back is not sharing; all-day events,
+    free-time events and points in time do not count."""
+    return [e for e in events if e.busy and not e.all_day and e.end > e.start and e.start < end and e.end > start]
 
 
 # ---------------------------------------------------------------- fetch
@@ -272,7 +292,8 @@ def parse_events(text: str, range_start: datetime, range_end: datetime,
             return
         busy = event.get("TRANSP", "OPAQUE").upper() != "TRANSPARENT" and not all_day
         events.append(Event(_unescape(event.get("SUMMARY", "(busy)")) or "(busy)", start, end, all_day, busy,
-                            event.get("UID", ""), _unescape(event.get("DESCRIPTION", ""))))
+                            event.get("UID", ""), _unescape(event.get("DESCRIPTION", "")),
+                            event.get("CLASS", "").upper() in {"PRIVATE", "CONFIDENTIAL"}))
 
     for event in raw_events:
         if "DTSTART" not in event or "RECURRENCE-ID" in event:
@@ -365,7 +386,7 @@ def free_gaps(events: list[Event], day: date, start: tuple[int, int], end: tuple
     if now is not None and now.date() == day:
         window_start = max(window_start, now.replace(second=0, microsecond=0))
     busy = sorted((max(e.start, window_start), min(e.end, window_end)) for e in events
-                  if e.busy and e.end > window_start and e.start < window_end)
+                  if e.busy and e.end > e.start and e.end > window_start and e.start < window_end)
     gaps = []
     cursor = window_start
     for begin, finish in busy:
@@ -411,23 +432,37 @@ def _fold(line: str) -> str:
     return "\r\n ".join(parts)
 
 
-def event_ics(uid: str, summary: str, start: datetime, end: datetime, *, zone: str, alert_minutes: int,
-              stamp: datetime, rrule: str | None = None) -> str:
-    """One VEVENT with a phone alert. Local times carry TZID and its VTIMEZONE when the zone is known;
-    otherwise they are floating (the phone shows them in its own zone)."""
-    lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Obsidian GTD agent//EN", "CALSCALE:GREGORIAN"]
+def _calendar_text(events: list[tuple[str, str, datetime, datetime, str | None]], *, zone: str, alert_minutes: int,
+                   stamp: datetime) -> str:
+    lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Obsidian GTD agent//EN", "CALSCALE:STUDYGORIAN"]
     timezone_block = VTIMEZONES.get(zone)
     if timezone_block:
         lines += timezone_block
     prefix = f";TZID={zone}" if timezone_block else ""
     trigger = f"-PT{alert_minutes}M" if alert_minutes > 0 else "PT0M"
-    lines += ["BEGIN:VEVENT", f"UID:{uid}", f"DTSTAMP:{stamp:%Y%m%dT%H%M%S}Z",
-              f"DTSTART{prefix}:{start:%Y%m%dT%H%M%S}", f"DTEND{prefix}:{end:%Y%m%dT%H%M%S}"]
-    if rrule:
-        lines.append(f"RRULE:{rrule}")
-    lines += [f"SUMMARY:{_escape(summary)}", "STATUS:CONFIRMED", "BEGIN:VALARM", "ACTION:DISPLAY",
-              f"DESCRIPTION:{_escape(summary)}", f"TRIGGER:{trigger}", "END:VALARM", "END:VEVENT", "END:VCALENDAR"]
+    for uid, summary, start, end, rrule in events:
+        lines += ["BEGIN:VEVENT", f"UID:{uid}", f"DTSTAMP:{stamp:%Y%m%dT%H%M%S}Z",
+                  f"DTSTART{prefix}:{start:%Y%m%dT%H%M%S}", f"DTEND{prefix}:{end:%Y%m%dT%H%M%S}"]
+        if rrule:
+            lines.append(f"RRULE:{rrule}")
+        lines += [f"SUMMARY:{_escape(summary)}", "STATUS:CONFIRMED", "BEGIN:VALARM", "ACTION:DISPLAY",
+                  f"DESCRIPTION:{_escape(summary)}", f"TRIGGER:{trigger}", "END:VALARM", "END:VEVENT"]
+    lines.append("END:VCALENDAR")
     return "\r\n".join(_fold(line) for line in lines) + "\r\n"
+
+
+def event_ics(uid: str, summary: str, start: datetime, end: datetime, *, zone: str, alert_minutes: int,
+              stamp: datetime, rrule: str | None = None) -> str:
+    """One VEVENT with a phone alert. Local times carry TZID and its VTIMEZONE when the zone is known;
+    otherwise they are floating (the phone shows them in its own zone)."""
+    return _calendar_text([(uid, summary, start, end, rrule)], zone=zone, alert_minutes=alert_minutes, stamp=stamp)
+
+
+def events_ics(events: list[tuple[str, str, datetime, datetime]], *, zone: str, alert_minutes: int,
+               stamp: datetime) -> str:
+    """One calendar file holding several events, each (uid, summary, start, end) with the same phone alert, so
+    importing it once adds them all. The same uid on a later import replaces the event."""
+    return _calendar_text([(*event, None) for event in events], zone=zone, alert_minutes=alert_minutes, stamp=stamp)
 
 
 _DAY_CODES = {name.casefold(): code for name, code in zip(calendar.day_name, WEEKDAY_CODES)}

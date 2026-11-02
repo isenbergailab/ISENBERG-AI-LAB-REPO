@@ -75,7 +75,7 @@ class FakeRadicaleHandler(BaseHTTPRequestHandler):
         pass
 
     def _authorized(self):
-        expected = "Basic " + base64.b64encode(f"taylor:{self.server.password}".encode()).decode()
+        expected = "Basic " + base64.b64encode(f"sampleowner:{self.server.password}".encode()).decode()
         if self.headers.get("Authorization") != expected:
             self.send_response(401)
             self.end_headers()
@@ -127,7 +127,7 @@ class FakeRadicaleHandler(BaseHTTPRequestHandler):
 class RadicaleCase(VaultCase):
     def extra_config(self):
         root = (self.base / "radicale").as_posix()
-        return (f"[calendar]\nenabled = true\nsource = \"folder\"\nfolder = \"{root}\"\nuser = \"taylor\"\n"
+        return (f"[calendar]\nenabled = true\nsource = \"folder\"\nfolder = \"{root}\"\nuser = \"sampleowner\"\n"
                 f"calendar = \"Personal\"\nurl = \"{self.server.url}\"\n")
 
     def setUp(self):
@@ -140,17 +140,17 @@ class RadicaleCase(VaultCase):
         self.addCleanup(secret.stop)
         super().setUp()
         root = self.base / "radicale"
-        (root / "collection-root" / "taylor").mkdir(parents=True)
+        (root / "collection-root" / "sampleowner").mkdir(parents=True)
         (root / ".Radicale.lock").write_text("")
-        self.personal = make_collection(root, "taylor", "845c00aa", "Personal", "VEVENT,VTODO", {
+        self.personal = make_collection(root, "sampleowner", "845c00aa", "Personal", "VEVENT,VTODO", {
             "a1.ics": phone_item("a1", "Advisor meeting", "20260928T150000", "20260928T160000"),
             "a2.ics": phone_item("a2", "Next week", "20261005T090000", "20261005T100000")})
-        make_collection(root, "taylor", "99aa", "Birthdays", "VEVENT", {
+        make_collection(root, "sampleowner", "99aa", "Birthdays", "VEVENT", {
             "b1.ics": phone_item("b1", "Someone's birthday", "20260928T120000", "20260928T130000")})
 
 
 class ReadTests(RadicaleCase):
-    def test_today_lists_the_events_in_the_named_radicale_calendar(self):
+    def test_named_radicale_calendar_still_feeds_planning_without_event_list(self):
         keeper = Housekeeper(self.agent)
         start = datetime(2026, 9, 28)
         events, warning = keeper.calendar_events(start, datetime(2026, 9, 29))
@@ -158,7 +158,9 @@ class ReadTests(RadicaleCase):
         self.assertEqual([(e.summary, e.start, e.end) for e in events],
                          [("Advisor meeting", datetime(2026, 9, 28, 15, 0), datetime(2026, 9, 28, 16, 0))])
         keeper.digest(self.agent.vault(), now=datetime(2026, 9, 28, 8, 0))
-        self.assertIn("15:00–16:00 Advisor meeting", self.read("_agent/TODAY.md"))
+        today = self.read("_agent/TODAY.md")
+        self.assertNotIn("Advisor meeting", today)
+        self.assertIn("## Planning", today)
 
     def test_a_missing_calendar_folder_is_a_plain_warning(self):
         import shutil
@@ -181,7 +183,7 @@ class AddEventTests(RadicaleCase):
         self.tick()
         self.agent.sync_review_requests()
         [(path, (ics, _))] = self.server.items.items()
-        self.assertTrue(path.startswith("/taylor/845c00aa/gtd-"), path)
+        self.assertTrue(path.startswith("/sampleowner/845c00aa/gtd-"), path)
         for line in ("BEGIN:VTIMEZONE", "TZID:America/New_York", "DTSTART;TZID=America/New_York:20261006T153000",
                      "DTEND;TZID=America/New_York:20261006T161500", "SUMMARY:Advisor meeting", "BEGIN:VALARM",
                      "TRIGGER:-PT10M"):

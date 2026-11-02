@@ -17,7 +17,7 @@ PATTERNS = {
     'AWS credential': re.compile(r'AKIA[0-9A-Z]{16}'),
     'private key': re.compile(r'-----BEGIN [A-Z ]*PRIVATE KEY-----'),
 }
-ALLOWED_SUFFIXES = {'.py', '.toml', '.md', '.txt', '.yaml', '.sh', '.ps1'}
+ALLOWED_SUFFIXES = {'.py', '.toml', '.md', '.txt', '.yaml', '.sh', '.ps1', '.js', '.cjs', '.css', '.json'}
 ALLOWED_NAMES = {'.gitignore', '.dockerignore', 'Dockerfile'}
 
 

@@ -163,6 +163,16 @@ class JudgmentEditTests(WatchCase):
         self.assertEqual(self.pending("drop"), [])  # the agent dropped it, so it does not ask why
 
 
+    def test_a_private_step_is_not_listed_for_the_model(self):
+        self.keep()
+        self.edit("- [ ] Build a raised bed #anywhere", "- [ ] Build a raised bed #anywhere #private")
+        self.edit("A vegetable bed by May.", "A herb garden by April.")
+        self.provider.outcome_answers.append({"drop_step_ids": [], "new_steps": [], "explanation": "Nothing changes."})
+        self.keep()
+        call = next(value for name, value in self.provider.calls if name == "outcome")
+        self.assertEqual([step["text"] for step in call["steps"]], ["Measure the yard", "Buy seeds"])
+
+
 class PrivateEditTests(WatchCase):
     private = True
 

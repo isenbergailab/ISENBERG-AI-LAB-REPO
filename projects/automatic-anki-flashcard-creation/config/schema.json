@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/automatic-anki-flashcard-creation/config.schema.json",
+  "title": "Automatic Anki Flashcard Creation Configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "target_language",
+    "explanation_language",
+    "language_profile",
+    "field_mapping",
+    "batch",
+    "duplicates",
+    "storage",
+    "output",
+    "adapter"
+  ],
+  "properties": {
+    "target_language": {"type": "string", "minLength": 2},
+    "explanation_language": {"type": "string", "minLength": 2},
+    "language_profile": {"type": "string", "minLength": 1},
+    "profile_options": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "script": {"enum": ["source", "simplified", "traditional"]},
+        "pinyin_style": {"enum": ["tone-marks", "tone-numbers"]}
+      }
+    },
+    "field_mapping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["Prompt", "Answer", "Notes", "Example"],
+      "properties": {
+        "Prompt": {"type": "string", "minLength": 1},
+        "Answer": {"type": "string", "minLength": 1},
+        "Notes": {"type": "string", "minLength": 1},
+        "Example": {"type": "string", "minLength": 1}
+      }
+    },
+    "batch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["explicit_export", "inactivity_seconds"],
+      "properties": {
+        "explicit_export": {"const": true},
+        "inactivity_seconds": {"type": "integer", "minimum": 0}
+      }
+    },
+    "duplicates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy"],
+      "properties": {
+        "policy": {"enum": ["reject", "merge", "allow"]},
+        "case_sensitive": {"type": "boolean", "default": false}
+      }
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state_directory", "identity_scope"],
+      "properties": {
+        "state_directory": {"type": "string", "minLength": 1},
+        "identity_scope": {"enum": ["user", "user-and-conversation"]}
+      }
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["directory", "naming", "write_validation_report"],
+      "properties": {
+        "directory": {"type": "string", "minLength": 1},
+        "naming": {"const": "nato"},
+        "write_validation_report": {"const": true}
+      }
+    },
+    "adapter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": {"enum": ["hermes", "telegram", "discord", "custom"]}
+      }
+    }
+  }
+}

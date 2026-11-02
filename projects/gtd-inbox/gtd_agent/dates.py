@@ -7,6 +7,11 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 
 
+def fmt_day(day: date) -> str:
+    """'Wed Sep 30': a day as short as it can be while still naming the weekday."""
+    return f"{day.strftime('%a')} {day.strftime('%b')} {day.day}"
+
+
 @dataclass(frozen=True)
 class Deadline:
     phrase: str

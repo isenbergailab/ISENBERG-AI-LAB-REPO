@@ -1,0 +1,20 @@
+{
+  "eligible": true,
+  "source_id": "text-cat-duplicate",
+  "source_type": "text",
+  "fields": {
+    "Prompt": "猫",
+    "Answer": "feline",
+    "Notes": "Reading: ねこ",
+    "Example": ["その猫はとても静かだ。", "That cat is very quiet."]
+  },
+  "provenance": {
+    "Prompt": "source",
+    "Answer": "source",
+    "Notes": "source",
+    "Example": "generated"
+  },
+  "uncertain_fields": [],
+  "review_required": true,
+  "issues": ["Duplicate fixture with conflicting content."]
+}

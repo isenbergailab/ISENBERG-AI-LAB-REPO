@@ -1,0 +1,4 @@
+.study-review-toolbar {display:flex;gap:.5em;padding:.4em .6em;margin:.4em 0;border:1px solid var(--background-modifier-border);border-radius:.4em}
+.study-review-controls {display:inline-flex;gap:.4em;margin-left:.8em}
+.study-review-controls button,.study-review-toolbar button {font-size:.85em;padding:.15em .55em}
+.markdown-source-view.is-live-preview .cm-line.study-review-marker {display:none!important}

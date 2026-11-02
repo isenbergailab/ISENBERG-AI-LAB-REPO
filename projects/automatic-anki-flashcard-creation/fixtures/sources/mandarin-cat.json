@@ -1,0 +1,20 @@
+{
+  "eligible": true,
+  "source_id": "mandarin-cat-1",
+  "source_type": "text",
+  "fields": {
+    "Prompt": "猫",
+    "Answer": "cat",
+    "Notes": "māo; classifier: 只",
+    "Example": ["那只猫在窗边睡觉。", "That cat is sleeping by the window."]
+  },
+  "provenance": {
+    "Prompt": "source",
+    "Answer": "source",
+    "Notes": "reference",
+    "Example": "generated"
+  },
+  "uncertain_fields": [],
+  "review_required": true,
+  "issues": ["Example sentence was generated for the fixture."]
+}

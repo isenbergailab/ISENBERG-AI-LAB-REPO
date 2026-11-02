@@ -132,11 +132,11 @@ class LintDigestTests(VaultCase):
     def test_digest_uses_live_task_queries(self):
         Housekeeper(self.agent).run(now=datetime(2026, 9, 28, 9, 0))
         digest = self.read("_agent/TODAY.md")
-        for heading in ("## Report", "## Needs you", "### Overdue and due today (2)", "### Follow-ups due (1)",
+        for heading in ("## Report", "## Overdue and due today (2)", "### Follow-ups due (1)",
                         "## Next actions", "### @computer (5)"):
             self.assertIn(heading, digest)
         self.assertIn("```tasks\nnot done\ndue before tomorrow", digest)
-        self.assertIn("Calendar off", digest)
+        self.assertNotIn("Calendar off", digest)
         before = self.path("_agent/TODAY.md").stat().st_mtime_ns
         Housekeeper(self.agent).digest(self.agent.vault(), datetime(2026, 9, 28, 9, 5))
         self.assertEqual(self.path("_agent/TODAY.md").stat().st_mtime_ns, before)  # unchanged content: no write

@@ -1,0 +1,20 @@
+{
+  "eligible": true,
+  "source_id": "spanish-casa-1",
+  "source_type": "text",
+  "fields": {
+    "Prompt": "casa",
+    "Answer": "house, home",
+    "Notes": "noun, feminine; plural: casas",
+    "Example": ["Mi casa está cerca del parque.", "My house is near the park."]
+  },
+  "provenance": {
+    "Prompt": "source",
+    "Answer": "source",
+    "Notes": "reference",
+    "Example": "generated"
+  },
+  "uncertain_fields": [],
+  "review_required": true,
+  "issues": ["Example sentence was generated for the fixture."]
+}

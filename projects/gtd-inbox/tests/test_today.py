@@ -43,24 +43,31 @@ class TodayCase(VaultCase):
 
 
 class LayoutTests(TodayCase):
-    def test_report_then_needs_you_then_next_actions(self):
+    def test_report_due_actions_reminders_planning_then_status(self):
         text = self.build()
         headings = re.findall(r"^## (.+)$", text, flags=re.M)
-        self.assertEqual(headings, ["Report", "Needs you", "Next actions"])
+        self.assertEqual(headings, ["Report", "Overdue and due today (2)", "Next actions",
+                                    "Queued project steps (2)", "Other reminders", "Planning", "Agent status"])
         report = self.section(text, "Report")
         self.assertIn("[[INBOX]]: 1 line · [[APPROVAL]]: 1 waiting", report)
-        self.assertIn("Calendar off", report)
+        self.assertNotIn("- Calendar:", report)
+        self.assertNotIn("Calendar off", report)
+        self.assertNotIn("- Free:", report)
+        self.assertNotIn("- Plan for today:", report)
+        self.assertNotIn("- Load:", report)
+        self.assertIn("- Load:", self.section(text, "Planning"))
+        self.assertTrue(self.section(text, "Agent status").lstrip().startswith("Monday, September 28"))
+        self.assertNotIn("Checked", text.split("## Report", 1)[0])
 
     def test_every_needs_you_class_lands_in_its_section(self):
-        needs = self.section(self.build(), "Needs you")
+        text = self.build()
+        needs = self.section(text, "Other reminders")
         subsections = re.findall(r"^### (.+)$", needs, flags=re.M)
-        self.assertEqual(subsections, ["Overdue and due today (2)", "Follow-ups due (2)", "Open questions (2)",
-                                       "Waiting in APPROVAL (1)", "Someday reviews due (2)"])
+        self.assertEqual(subsections, ["Follow-ups due (2)", "Open questions (2)", "Someday reviews due (2)"])
         self.assertIn("- [[DEMO_PROJECT#Open questions|DEMO_PROJECT]]: Which room should we book?", needs)
         self.assertIn("- [[DEMO_PROJECT#Open questions|DEMO_PROJECT]]: Who runs the first meeting?", needs)
         self.assertNotIn("Which textbook edition", needs)  # someday projects stay quiet
-        proposal = self.pending("inbox")[0]
-        self.assertIn(f"- [[APPROVAL#^p-{proposal['id']}|Next action · Buy stamps]] → Single action › @errands", needs)
+        self.assertNotIn("Waiting in APPROVAL", text)
         self.assertIn("- [[LATIN]] · review date Sun Sep 20", needs)
         self.assertIn("- Sail the Cape · review Sun Sep 27 · [[SOMEDAY_MAYBE]]", needs)
         self.assertNotIn("Visit Rome", needs)
@@ -78,6 +85,68 @@ class LayoutTests(TodayCase):
 
 class QueryTests(TodayCase):
     """Each query selects the source tasks, so a tick in TODAY changes the line where the task lives."""
+
+    def test_dropped_project_deadline_stays_out_of_today_after_next_removed(self):
+        self.write(LAB, "---\nkey: DEMO_PROJECT\ntype: project\nstatus: dropped\n---\n"
+                        "# DEMO_PROJECT\n\n## Deadlines\n"
+                        "- [ ] Take the retired exam #computer 📅 2026-09-25\n")
+        self.write("01_GTD/SINGLE_ACTIONS.md", self.read("01_GTD/SINGLE_ACTIONS.md") +
+                   "\n- [ ] Keep the current deadline #computer 📅 2026-09-28\n")
+        text = self.build()
+        shown = select(queries(text)["Overdue and due today"], self.agent.vault().tasks, TODAY)
+        self.assertIn("Keep the current deadline", [task.title for task in shown])
+        self.assertNotIn(LAB, [task.path for task in shown])
+
+    def test_parked_projects_and_subnotes_are_excluded_from_queries_and_counts(self):
+        parked_paths = set()
+        working_paths = set()
+        for status in ("active", "waiting", "someday", "done", "dropped"):
+            # Literal punctuation and a shared prefix must not hide another project.
+            key = "EXAM+OLD" if status == "dropped" else "EXAM+OLD_" + status.upper()
+            folder = "02_PROJECTS/" + key
+            self.path(folder).mkdir()
+            hub = f"{folder}/{key}.md"
+            self.write(hub, f"---\nkey: {key}\ntype: project\nstatus: {status}\n---\n"
+                           f"# {key}\n\n## Steps\n"
+                           "- [ ] Work now #computer #next 📅 2026-09-25\n"
+                           "- [ ] Unsorted step #next\n\n## Waiting For\n"
+                           "- [ ] #waiting Someone: answer 📅 2026-09-25\n")
+            subnote = f"{folder}/notes.md"
+            self.write(subnote, "# Notes\n- [ ] Subnote task #calls #next 📅 2026-09-25\n")
+            paths = working_paths if status in {"active", "waiting"} else parked_paths
+            paths.update((hub, subnote))
+        # Build directly, before housekeeping can remove stale #next tags.
+        Housekeeper(self.agent).digest(self.agent.vault(), now=datetime(2026, 9, 28, 8, 0))
+        text = self.read("_agent/TODAY.md")
+        vault = self.agent.vault()
+        selected_paths = set()
+        for heading, query in queries(text).items():
+            shown = select(query, vault.tasks, TODAY)
+            paths = {task.path for task in shown}
+            self.assertFalse(paths & parked_paths, heading)
+            selected_paths.update(paths)
+            self.assertRegex(text, rf"(?m)^###? {re.escape(heading)} \({len(shown)}\)$")
+        self.assertTrue(working_paths <= selected_paths)
+
+    def test_status_changes_refresh_queries_without_changing_source_tasks(self):
+        original = self.read(LAB)
+        keeper = Housekeeper(self.agent)
+        now = datetime(2026, 9, 28, 8, 0)
+        for status in ("dropped", "active"):
+            with self.subTest(status=status):
+                source = original.replace("status: active", f"status: {status}")
+                self.write(LAB, source)
+                vault = self.agent.vault()
+                keeper.digest(vault, now=now)
+                shown = [t for q in queries(self.read("_agent/TODAY.md")).values()
+                         for t in select(q, vault.tasks, TODAY) if t.path == LAB]
+                self.assertEqual(bool(shown), status == "active")
+                self.assertEqual(self.read(LAB), source)
+
+    def test_queries_hide_task_metadata(self):
+        for query in queries(self.build()).values():
+            for directive in ("hide id", "hide created date", "hide due date", "hide tags"):
+                self.assertIn(directive, query)
 
     def titles(self, heading):
         query = queries(self.build())[heading]

@@ -132,6 +132,17 @@ class Ledger:
         return list(self.connection.execute(
             "SELECT * FROM proposals WHERE status=? ORDER BY created_at, dedupe_key", (status,)))
 
+    def proposals_since(self, day: str) -> list[sqlite3.Row]:
+        """Proposals made or last changed on or after this day (YYYY-MM-DD), oldest first."""
+        return list(self.connection.execute(
+            "SELECT * FROM proposals WHERE created_at >= ? OR updated_at >= ? ORDER BY created_at, dedupe_key",
+            (day, day)))
+
+    def undone_proposals(self) -> set[str]:
+        """The proposals whose change you took back with Undo."""
+        return {row["origin_id"] for row in self.connection.execute(
+            "SELECT origin_id FROM undo_records WHERE origin_type='proposal' AND status='undone'")}
+
     def pending(self) -> list[sqlite3.Row]:
         return self.list("pending")
 
@@ -368,3 +379,7 @@ class Ledger:
     def kv_set(self, key: str, value: str) -> None:
         with self.connection:
             self.connection.execute("INSERT OR REPLACE INTO kv VALUES (?,?,?)", (key, value, _now()))
+
+    def kv_delete(self, key: str) -> None:
+        with self.connection:
+            self.connection.execute("DELETE FROM kv WHERE key=?", (key,))

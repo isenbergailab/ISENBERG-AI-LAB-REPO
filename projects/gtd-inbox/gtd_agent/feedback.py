@@ -5,8 +5,10 @@ HEADING = "**Your correction:**"
 PLACEHOLDER = "Write your correction here, then check Teacher feedback."
 REASON_HEADING = "**Your reason:**"
 OUTCOME_HEADING = "**What came out of it:**"
+ANSWER_HEADING = "**Your answer:**"
 FIELDS = {HEADING: PLACEHOLDER, REASON_HEADING: "Write why you dropped it, then tick Save reason.",
-          OUTCOME_HEADING: "Write one line, then tick Save."}
+          OUTCOME_HEADING: "Write one line, then tick Save.",
+          ANSWER_HEADING: "Write your answer here, then tick Answer question."}
 
 
 def field_heading(body: str) -> str | None:

@@ -114,7 +114,7 @@ def export(folder: Path, user: str, out_dir: Path) -> list[tuple[Path, int]]:
         out_dir.mkdir(parents=True, exist_ok=True)
         name = re.sub(r"[^\w.-]+", "_", collection.displayname).strip("_") or collection.id
         out = out_dir / f"radicale-{name}.ics"
-        lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//GTD agent//Radicale export//EN", "CALSCALE:GREGORIAN",
+        lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//GTD agent//Radicale export//EN", "CALSCALE:STUDYGORIAN",
                  *zones.values(), *events, "END:VCALENDAR"]
         out.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8", newline="")
         written.append((out, len(events)))

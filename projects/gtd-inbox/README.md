@@ -17,7 +17,7 @@ sandbox:
   fake_inputs: true
   capped: true
   watched: true
-approval_actions: [applying judgment proposals, enabling remote inference, connecting external accounts, exporting notes]
+approval_actions: [applying judgment proposals, enabling remote inference, connecting external accounts, exporting notes, sending Telegram pings, enabling trusted automatic actions, configuring private model hosts, installing vault-writing plugins]
 unattended_runs: false
 officer_review:
 spend_cap_usd: 0
@@ -116,3 +116,9 @@ Live model availability remains unverified. Sync conflicts need independent test
 Mail screening can miss sensitive material. Private Markdown relies on supplied markers.
 Zero budget setting alone prevents no calls: supplied demo also disables remote inference
 and removes networking. Paid inference requires provider-side spending limits.
+
+## November capability update
+
+See [upgrade notes](docs/UPGRADE.md) for new commands, optional integrations and plugin setup.
+The synthetic default configuration leaves remote inference, private models, trusted automatic
+judgment and Telegram pings disabled. Existing personal deployments are not modified.

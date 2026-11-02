@@ -30,10 +30,10 @@ class DecidedSeparateNoteTest(VaultCase):
 
     def test_decision_goes_to_the_separate_note_and_closes_the_answered_question(self):
         self.provider.decided_answers.append({
-            "decision": "Oscar advises the lab", "why": "he agreed by email", "question_ids": ["q2"],
-            "section": "", "steps": [{"title": "Email Oscar the meeting schedule", "context": "#computer"}],
+            "decision": "SampleAdvisor advises the lab", "why": "he agreed by email", "question_ids": ["q2"],
+            "section": "", "steps": [{"title": "Email SampleAdvisor the meeting schedule", "context": "#computer"}],
             "explanation": "Settles the advisor question."})
-        self.add_inbox("Decided: Oscar advises the lab because he agreed by email [[DEMO_PROJECT]]")
+        self.add_inbox("Decided: SampleAdvisor advises the lab because he agreed by email [[DEMO_PROJECT]]")
         self.agent.scan()
         row = self.pending("inbox")[0]
         proposal = json.loads(row["proposal_json"])
@@ -47,7 +47,7 @@ class DecidedSeparateNoteTest(VaultCase):
         self.tick("Approve", row["id"])
         self.agent.sync_review_requests()
         notes = self.read("02_PROJECTS/DEMO_PROJECT/DEMO_PROJECT_DECISIONS.md")
-        line = "- **Oscar advises the lab** · he agreed by email · 2026-09-28"
+        line = "- **SampleAdvisor advises the lab** · he agreed by email · 2026-09-28"
         self.assertIn(line, notes)
         self.assertLess(notes.index("Name it The Demo"), notes.index(line))
         self.assertLess(notes.index(line), notes.index("## Budget"))
@@ -55,9 +55,20 @@ class DecidedSeparateNoteTest(VaultCase):
         self.assertIn("- Which room do we book?", notes)
         hub = self.read("02_PROJECTS/DEMO_PROJECT/DEMO_PROJECT.md")
         self.assertIn("> - Pick a meeting day?", hub)
-        self.assertIn("- 2026-09-28 Decided: Oscar advises the lab", hub)
-        self.assertIn("- [ ] Email Oscar the meeting schedule #computer", hub)
+        self.assertIn("- 2026-09-28 Decided: SampleAdvisor advises the lab", hub)
+        self.assertIn("- [ ] Email SampleAdvisor the meeting schedule #computer", hub)
         self.assertNotIn("Decided:", self.read("00_INBOX/INBOX.md"))
+
+    def test_a_private_question_is_not_sent_to_the_model(self):
+        path = "02_PROJECTS/DEMO_PROJECT/DEMO_PROJECT_DECISIONS.md"
+        self.write(path, self.read(path) + "- Is Pat leaving the club? #private\n")
+        self.provider.decided_answers.append({"decision": "SampleAdvisor advises the lab", "why": "", "question_ids": [],
+                                              "section": "", "steps": [], "explanation": ""})
+        self.add_inbox("Decided: SampleAdvisor advises the lab [[DEMO_PROJECT]]")
+        self.agent.scan()
+        asked = self.provider.calls[-1][1]["questions"]
+        self.assertEqual(len(asked), 3)  # the meeting day, the advisor and the room
+        self.assertNotIn("Pat", json.dumps(asked))
 
     def test_unticking_and_ticking_items_changes_what_is_applied(self):
         self.provider.decided_answers.append({

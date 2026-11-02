@@ -23,7 +23,7 @@ from gtd_agent.mailbox import Mailbox, MailError
 
 USER = "agent@example.org"
 PASSWORD = "app-pw-Zx81q"
-OWNER = "taylor@example.com"
+OWNER = "sampleowner@example.com"
 CHANGES = {"SELECT", "STORE", "EXPUNGE", "MOVE", "COPY", "APPEND", "DELETE", "CREATE", "RENAME"}
 AUTH = "mx.example.org"  # the receiving server's authserv-id
 YOURS = (f"{AUTH}; dkim=pass (2048-bit key) header.d=example.com header.i=@example.com; "
@@ -130,7 +130,7 @@ class SenderTests(MailCase):
         return Housekeeper(self.agent).run(now=datetime(2026, 9, 30, 9, minute))
 
     def test_only_your_authenticated_mail_is_read(self):
-        self.server.add(message(f"Taylor <{OWNER}>", "Fwd: Room booking", (YOURS,)))
+        self.server.add(message(f"SampleOwner <{OWNER}>", "Fwd: Room booking", (YOURS,)))
         self.server.add(message("Mallory <mallory@example.net>", "Hi there", (STRANGER,)))
         self.server.add(message(OWNER, "Urgent", (FAILED,)))
         messages = self.check_mail()
@@ -185,21 +185,21 @@ PROTON_SIGNATURE = "Sent with Proton Mail secure email."
 def forward(original: str, subject: str, body: list[str], note: str = "Can you track this?",
             when: str = "Tuesday, September 29th, 2026 at 10:00 AM", results: tuple[str, ...] = (YOURS,),
             message_id: str = "", to: str = USER) -> bytes:
-    """A forward the way Proton writes it in plain text: Taylor's note, the signature, the separator, the
+    """A forward the way Proton writes it in plain text: SampleOwner's note, the signature, the separator, the
     original's headers, then the original quoted with '> '."""
     text = "\n".join([note, "", "", "", PROTON_SIGNATURE, "", "", "------- Forwarded Message -------",
-                      f"From: {original}", f"Date: On {when}", f"Subject: {subject}", f"To: Taylor <{OWNER}>", "",
+                      f"From: {original}", f"Date: On {when}", f"Subject: {subject}", f"To: SampleOwner <{OWNER}>", "",
                       *[f"> {line}" if line else ">" for line in body]])
     slug = message_id or re.sub(r"\W+", ".", subject.lower()).strip(".") + ".fwd"
     head = [f"Authentication-Results: {result}" for result in results]
-    head += [f"From: Taylor <{OWNER}>", f"To: {to}", f"Subject: Fwd: {subject}",
+    head += [f"From: SampleOwner <{OWNER}>", f"To: {to}", f"Subject: Fwd: {subject}",
              "Date: Wed, 30 Sep 2026 08:00:00 -0400", f"Message-ID: <{slug}@example.com>", "MIME-Version: 1.0",
              "Content-Type: text/plain; charset=utf-8", "Content-Transfer-Encoding: 8bit"]
     return ("\r\n".join(head) + "\r\n\r\n" + text.replace("\n", "\r\n") + "\r\n").encode("utf-8")
 
 
-ROOM = ["Hi Taylor,", "Can you confirm the room for Oct 6 by Friday?", "Pat", "",
-        f"On Monday, September 28th, 2026 at 9:00 AM, Taylor <{OWNER}> wrote:", "", "> Do we have a room?"]
+ROOM = ["Hi SampleOwner,", "Can you confirm the room for Oct 6 by Friday?", "Pat", "",
+        f"On Monday, September 28th, 2026 at 9:00 AM, SampleOwner <{OWNER}> wrote:", "", "> Do we have a room?"]
 
 HTML_FORWARD = f"""<div>Can you track this?</div><div><br></div>
 <div class="protonmail_signature_block"><div class="protonmail_signature_block-proton">Sent with
@@ -209,11 +209,11 @@ HTML_FORWARD = f"""<div>Can you track this?</div><div><br></div>
 From: Pat Lee &lt;pat@example.net&gt;<br>
 Date: On Tuesday, September 29th, 2026 at 10:00 AM<br>
 Subject: Room booking<br>
-To: Taylor &lt;{OWNER}&gt;<br>
+To: SampleOwner &lt;{OWNER}&gt;<br>
 <br>
 <blockquote class="protonmail_quote" type="cite">
-<p>Hi Taylor,</p><p>Can you confirm the room for Oct 6 by Friday?</p><p>Pat</p>
-<div class="gmail_quote">On Mon, Sep 28, 2026 at 9:00 AM Taylor &lt;{OWNER}&gt; wrote:<br>
+<p>Hi SampleOwner,</p><p>Can you confirm the room for Oct 6 by Friday?</p><p>Pat</p>
+<div class="gmail_quote">On Mon, Sep 28, 2026 at 9:00 AM SampleOwner &lt;{OWNER}&gt; wrote:<br>
 <blockquote>Do we have a room?</blockquote></div>
 </blockquote></div>"""
 
@@ -225,17 +225,17 @@ class ReadForwardTests(MailCase):
         self.assertEqual((mail.sender_name, mail.sender), ("Pat Lee", "pat@example.net"))
         self.assertEqual(mail.date, datetime(2026, 9, 29, 10, 0))
         self.assertEqual(mail.subject, "Room booking")
-        self.assertEqual(mail.body, "Hi Taylor,\nCan you confirm the room for Oct 6 by Friday?\nPat")
+        self.assertEqual(mail.body, "Hi SampleOwner,\nCan you confirm the room for Oct 6 by Friday?\nPat")
         self.assertEqual(mail.note, "Can you track this?")
 
     def test_an_html_forward_reads_the_same(self):
-        raw = (f"From: Taylor <{OWNER}>\r\nTo: {USER}\r\nSubject: Fwd: Room booking\r\n"
+        raw = (f"From: SampleOwner <{OWNER}>\r\nTo: {USER}\r\nSubject: Fwd: Room booking\r\n"
                "Message-ID: <html.fwd@example.com>\r\nMIME-Version: 1.0\r\n"
                "Content-Type: text/html; charset=utf-8\r\n\r\n" + HTML_FORWARD).encode("utf-8")
         mail = read_forward(raw, self.settings)
         self.assertEqual((mail.sender, mail.subject, mail.date), ("pat@example.net", "Room booking",
                                                                  datetime(2026, 9, 29, 10, 0)))
-        self.assertEqual(mail.body, "Hi Taylor,\nCan you confirm the room for Oct 6 by Friday?\nPat")
+        self.assertEqual(mail.body, "Hi SampleOwner,\nCan you confirm the room for Oct 6 by Friday?\nPat")
         self.assertEqual(mail.note, "Can you track this?")
 
     def test_a_header_style_date_lands_in_your_zone_even_without_a_tz_database(self):
@@ -245,27 +245,27 @@ class ReadForwardTests(MailCase):
         with mock.patch("gtd_agent.mail.ZoneInfo", side_effect=ZoneInfoNotFoundError("no tzdata")):
             self.assertIsNotNone(read_forward(raw, self.settings).date)
 
-    def plain(self, text: str, sender: str = f"Taylor <{OWNER}>") -> bytes:
+    def plain(self, text: str, sender: str = f"SampleOwner <{OWNER}>") -> bytes:
         return (f"From: {sender}\r\nTo: {USER}\r\nSubject: FW: Room booking\r\nMessage-ID: <other.fwd@example.com>\r\n"
                 "Content-Type: text/plain; charset=utf-8\r\n\r\n" + text.replace("\n", "\r\n")).encode("utf-8")
 
     def test_outlook_and_apple_mail_forwards_read_the_same(self):
         outlook = ("Can you track this?\n\n________________________________\nFrom: Pat Lee <pat@example.net>\n"
-                   "Sent: Tuesday, September 29, 2026 10:00 AM\nTo: Taylor <taylor@example.com>\nSubject: Room booking\n\n"
-                   "Hi Taylor,\nCan you confirm the room for Oct 6 by Friday?\nPat\n")
+                   "Sent: Tuesday, September 29, 2026 10:00 AM\nTo: SampleOwner <sampleowner@example.com>\nSubject: Room booking\n\n"
+                   "Hi SampleOwner,\nCan you confirm the room for Oct 6 by Friday?\nPat\n")
         apple = ("Can you track this?\n\nBegin forwarded message:\n\nFrom: Pat Lee <pat@example.net>\n"
-                 "Subject: Room booking\nDate: September 29, 2026 at 10:00:00 AM EDT\nTo: Taylor <taylor@example.com>\n\n"
-                 "Hi Taylor,\nCan you confirm the room for Oct 6 by Friday?\nPat\n")
+                 "Subject: Room booking\nDate: September 29, 2026 at 10:00:00 AM EDT\nTo: SampleOwner <sampleowner@example.com>\n\n"
+                 "Hi SampleOwner,\nCan you confirm the room for Oct 6 by Friday?\nPat\n")
         for text in (outlook, apple, outlook.replace("________________________________\n", "")):
             mail = read_forward(self.plain(text), self.settings)
             self.assertTrue(mail.forwarded, text)
             self.assertEqual((mail.sender_name, mail.sender, mail.subject, mail.date),
                              ("Pat Lee", "pat@example.net", "Room booking", datetime(2026, 9, 29, 10, 0)))
-            self.assertEqual(mail.body, "Hi Taylor,\nCan you confirm the room for Oct 6 by Friday?\nPat")
+            self.assertEqual(mail.body, "Hi SampleOwner,\nCan you confirm the room for Oct 6 by Friday?\nPat")
             self.assertEqual(mail.note, "Can you track this?")
 
     DANA = "Dana Roy <dana@example.org>"
-    PASSED_ON = ("Taylor, can you take this one? I need it by Friday.\nDana\n\n"
+    PASSED_ON = ("SampleOwner, can you take this one? I need it by Friday.\nDana\n\n"
                  "---------- Forwarded message ---------\nFrom: Pat Lee <pat@example.net>\n"
                  "Date: Tue, Sep 29, 2026 at 10:00 AM\nSubject: Room booking\nTo: Dana Roy <dana@example.org>\n\n"
                  "Hi Dana,\nCan you confirm the room for Oct 6?\nPat")
@@ -295,7 +295,7 @@ class ReadForwardTests(MailCase):
         self.assertEqual(reply.body, "Can you take this one?\nDana")  # under a reply the same marks head old history
 
     def test_a_note_you_write_yourself_is_not_a_forward(self):
-        raw = (f"From: Taylor <{OWNER}>\r\nTo: {USER}\r\nSubject: Call the dentist\r\n"
+        raw = (f"From: SampleOwner <{OWNER}>\r\nTo: {USER}\r\nSubject: Call the dentist\r\n"
                "Message-ID: <note@example.com>\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n"
                f"Book a cleaning\r\n\r\n{PROTON_SIGNATURE}\r\n").encode("utf-8")
         mail = read_forward(raw, self.settings)
@@ -382,9 +382,10 @@ class SharedMailboxTests(MailCase):
 
 
 def mail_answer(target: str = "", actions: tuple = (), events: tuple = (), waits: tuple = (), answers: tuple = (),
-                summary: str = "Pat asks about the lab room.", explanation: str = "An ask with a date.") -> dict:
+                summary: str = "Pat asks about the lab room.", explanation: str = "An ask with a date.",
+                replies: tuple = ()) -> dict:
     return {"target_key": target, "summary": summary, "actions": list(actions), "events": list(events),
-            "waits": list(waits), "answers": list(answers), "explanation": explanation}
+            "waits": list(waits), "answers": list(answers), "replies": list(replies), "explanation": explanation}
 
 
 def answering(person: str, evidence: str):
@@ -410,7 +411,7 @@ class ProposalTests(MailCase):
 
     def test_an_ask_and_a_date_become_one_proposal_that_names_the_mail(self):
         self.server.add(forward("Pat Lee <pat@example.net>", "Room booking", [
-            "Hi Taylor,", "Can you confirm the room for Oct 6 by Friday?", "Kickoff is Tuesday Oct 6 at 3:30pm."]))
+            "Hi SampleOwner,", "Can you confirm the room for Oct 6 by Friday?", "Kickoff is Tuesday Oct 6 at 3:30pm."]))
         self.provider.mails.append(mail_answer("DEMO_PROJECT", actions=[
             {"title": "Confirm the room for Oct 6", "context": "#computer", "due_evidence": "Friday",
              "evidence": "Can you confirm the room for Oct 6 by Friday?"}], events=[
@@ -584,7 +585,7 @@ LABEL = "Labels/GTD"
 
 
 class LabeledMailCase(MailCase):
-    """Mail Taylor labels GTD in Proton, read through Bridge; with bridge False, mail he sends to the agent inbox."""
+    """Mail SampleOwner labels GTD in Proton, read through Bridge; with bridge False, mail he sends to the agent inbox."""
     bridge = True
 
     def extra_config(self) -> str:
@@ -610,7 +611,7 @@ class LabeledMailCase(MailCase):
 
 
 class DraftTests(LabeledMailCase):
-    """Replies and follow-ups get drafts in Taylor's voice. Through Bridge they land in Proton Drafts on approval."""
+    """Replies and follow-ups get drafts in SampleOwner's voice. Through Bridge they land in Proton Drafts on approval."""
 
     def test_a_reply_draft_lands_in_proton_drafts_threaded_on_approval(self):
         if self.bridge:
@@ -618,7 +619,7 @@ class DraftTests(LabeledMailCase):
         else:
             self.add(forward("Pat Lee <pat@example.net>", "Slides", ["Here are the slides you asked for."]))
         self.provider.mails.append(answering("Pat", "Here are the slides"))
-        self.provider.draft_by_kind["reply"] = {"subject": "Re: Slides", "body": "Hi Pat,\n\nGot them, thanks!\n\nTaylor"}
+        self.provider.draft_by_kind["reply"] = {"subject": "Re: Slides", "body": "Hi Pat,\n\nGot them, thanks!\n\nSampleOwner"}
         Housekeeper(self.agent).run(now=datetime(2026, 9, 30, 9, 0))
         row = self.pending("mail")[0]
         approval = self.read("_agent/APPROVAL.md")
@@ -655,14 +656,14 @@ class DraftTests(LabeledMailCase):
 
     def test_your_voice_note_guides_every_draft(self):
         self.path("04_REFERENCE/SYSTEM").mkdir(parents=True, exist_ok=True)
-        self.write("04_REFERENCE/SYSTEM/EMAIL_VOICE.md", "---\ntype: reference\n---\n# EMAIL_VOICE\n\nShort. Sign off: Best, Taylor\n")
+        self.write("04_REFERENCE/SYSTEM/EMAIL_VOICE.md", "---\ntype: reference\n---\n# EMAIL_VOICE\n\nShort. Sign off: Best, SampleOwner\n")
         Housekeeper(self.agent).run(now=datetime(2026, 9, 30, 9, 0))
         call = next(c for name, c in self.provider.calls if name == "draft")
-        self.assertIn("Sign off: Best, Taylor", call["voice"])
+        self.assertIn("Sign off: Best, SampleOwner", call["voice"])
 
 
 class SentReplyTests(LabeledMailCase):
-    """Through Bridge, Taylor's reply in Sent ticks the 'Reply to' action, which closes the replied wait."""
+    """Through Bridge, SampleOwner's reply in Sent ticks the 'Reply to' action, which closes the replied wait."""
 
     def test_your_reply_in_sent_closes_the_replied_wait(self):
         self.add(message("Pat Lee <pat@example.net>", "Slides", body="Here are the slides you asked for."))
@@ -671,10 +672,10 @@ class SentReplyTests(LabeledMailCase):
         self.approve(self.pending("mail")[0]["id"])
         single = "01_GTD/SINGLE_ACTIONS.md"
         self.assertIn("#replied", next(l for l in self.read(single).splitlines() if "#waiting Pat" in l))
-        mine = self.server.add((f"From: Taylor <{OWNER}>\r\nTo: pat@example.net\r\nSubject: Re: Slides\r\n"
+        mine = self.server.add((f"From: SampleOwner <{OWNER}>\r\nTo: pat@example.net\r\nSubject: Re: Slides\r\n"
                                 "In-Reply-To: <slides@example.com>\r\nMessage-ID: <reply@example.com>\r\n\r\nThanks!\r\n"
                                 ).encode(), "Sent")
-        other = self.server.add((f"From: Taylor <{OWNER}>\r\nTo: sam@example.net\r\nSubject: Lunch\r\n"
+        other = self.server.add((f"From: SampleOwner <{OWNER}>\r\nTo: sam@example.net\r\nSubject: Lunch\r\n"
                                  "Message-ID: <lunch@example.com>\r\n\r\nNoon?\r\n").encode(), "Sent")
         Housekeeper(self.agent).run(now=datetime(2026, 9, 30, 9, 10))
         text = self.read(single)
@@ -685,13 +686,13 @@ class SentReplyTests(LabeledMailCase):
 
 
 class MailCaptureTests(LabeledMailCase):
-    """Mail Taylor writes to himself becomes Inbox lines, like Telegram, with no model call on the mail."""
+    """Mail SampleOwner writes to himself becomes Inbox lines, like Telegram, with no model call on the mail."""
 
     def to_self(self, subject: str, body: str, to: str = "", attach: bool = False) -> bytes:
         message = EmailMessage()
         if not self.bridge:
             message["Authentication-Results"] = YOURS
-        message["From"] = f"Taylor <{OWNER}>"
+        message["From"] = f"SampleOwner <{OWNER}>"
         message["To"] = to or (OWNER if self.bridge else USER)
         message["Subject"] = subject
         slug = re.sub(r"\W+", ".", subject.lower())
@@ -724,7 +725,7 @@ class MailCaptureTests(LabeledMailCase):
     def test_your_own_plus_address_still_counts_as_you(self):
         if not self.bridge:
             return  # Proton +aliases: a filter labels mail to you+gtd@ by itself
-        self.add(self.to_self("Renew passport", "Book the photo first", to="Taylor <taylor+gtd@example.com>"))
+        self.add(self.to_self("Renew passport", "Book the photo first", to="SampleOwner <sampleowner+gtd@example.com>"))
         self.check()
         self.assertEqual(self.inbox_lines(), ["- Renew passport", "- Book the photo first"])
 
@@ -904,7 +905,7 @@ class NoSendingTests(unittest.TestCase):
 
 
 class BridgeTests(MailCase):
-    """Proton through Bridge: only mail Taylor labels GTD is read, and nothing in the mailbox changes."""
+    """Proton through Bridge: only mail SampleOwner labels GTD is read, and nothing in the mailbox changes."""
 
     def extra_config(self) -> str:
         return (f'[mail]\nenabled = true\nsource = "bridge"\nhost = "127.0.0.1"\nport = {self.server.port}\n'
@@ -927,7 +928,7 @@ class BridgeTests(MailCase):
         self.assertEqual(self.server.subjects(LABEL), ["Room booking"])
 
     def test_a_forward_someone_sends_you_reaches_the_model_as_their_mail(self):
-        body = ("Taylor, can you take this one? I need it by Friday.\r\nDana\r\n\r\n"
+        body = ("SampleOwner, can you take this one? I need it by Friday.\r\nDana\r\n\r\n"
                 "---------- Forwarded message ---------\r\nFrom: Pat Lee <pat@example.net>\r\n"
                 "Date: Tue, Sep 29, 2026 at 10:00 AM\r\nSubject: Room booking\r\nTo: Dana Roy <dana@example.org>\r\n\r\n"
                 "Hi Dana,\r\nCan you confirm the room for Oct 6?\r\nPat")
@@ -955,7 +956,7 @@ class BridgeTests(MailCase):
     def test_the_mailbox_opens_only_the_label_and_sent_never_private(self):
         self.server.add(message("Chase <alerts@chase.com>", "Statement", body="Your statement."), "Folders/Private")
         self.server.add(message("Pat Lee <pat@example.net>", "Room booking", body="Can you confirm the room?"), LABEL)
-        self.server.add(message(f"Taylor <{OWNER}>", "Re: Room booking", body="Yes."), "Sent")
+        self.server.add(message(f"SampleOwner <{OWNER}>", "Re: Room booking", body="Yes."), "Sent")
         with Mailbox(self.settings) as box:  # the wall holds whatever the caller asks for
             for folder in ("Folders/Private", "INBOX", "All Mail", "Labels/Other"):
                 with self.subTest(folder=folder), self.assertRaisesRegex(MailError, "never opens"):
@@ -1064,8 +1065,8 @@ class MailSettingsTests(unittest.TestCase):
     def test_your_addresses_are_a_list_kept_in_lower_case(self):
         with self.assertRaisesRegex(ValueError, "own_addresses must be a list"):
             self.load('own_addresses = "b@example.com"\n')
-        settings = self.load('own_addresses = ["Taylor@Example.com "]\n')
-        self.assertEqual(settings.mail_own_addresses, ("taylor@example.com",))
+        settings = self.load('own_addresses = ["SampleOwner@Example.com "]\n')
+        self.assertEqual(settings.mail_own_addresses, ("sampleowner@example.com",))
 
 
 if __name__ == "__main__":

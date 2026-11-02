@@ -11,6 +11,7 @@ it.
 """
 from __future__ import annotations
 
+import json
 import re
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -23,7 +24,7 @@ from .dates import resolve_date_evidence
 from .markdown import iter_links, link_target, parse_frontmatter, split_frontmatter
 from .providers import ProviderError
 from .screen import screen
-from .tasks import TAG_RE, clean_text, format_task
+from .tasks import TAG_RE, clean_text, format_task, parse_tasks, with_date
 from .vault import Vault, project_key
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -196,7 +197,17 @@ class DocumentIntake:
             if existing is not None:
                 if existing["status"] == "stale":
                     self.rebuild(vault, existing, rel, path.name, text, sha, front)
-                continue
+                    continue
+                if (existing["status"] != "pending" or state != "ok"
+                        or json.loads(existing["proposal_json"]).get("kind") != "manual"):
+                    continue
+                # A name collision can clear without changing the source. Recheck only
+                # deterministic blockers; keep the existing question until it clears.
+                try:
+                    self.front_start(front, self.agent.today())
+                    self.front_new_project(vault, front, rel)
+                except ValueError:
+                    continue
             failed = self.ledger.kv_get(f"docfail|{sha[:16]}")
             if state == "ok" and failed and datetime.fromisoformat(failed) > now - timedelta(minutes=RETRY_MINUTES):
                 continue
@@ -209,7 +220,13 @@ class DocumentIntake:
                 self.ledger.kv_set(f"docfail|{sha[:16]}", now.isoformat())
                 messages.append(f"CHECK: could not read {path.name} ({exc}). Retrying in {RETRY_MINUTES} minutes.")
                 continue
-            self.hk._propose("document", key, proposal)
+            if existing is not None:
+                from .workflow import PROPOSAL_VERSION
+                proposal["engine_version"] = PROPOSAL_VERSION
+                self.agent.note_conflicts(proposal)
+                self.ledger.upsert("document", key, proposal)
+            else:
+                self.hk._propose("document", key, proposal)
         self.hk._expire("document", valid)
         return messages
 
@@ -251,7 +268,7 @@ class DocumentIntake:
                               "without extracting dates; add tasks by hand."}
         try:
             self.front_start(front, today)
-            self.front_new_project(vault, front)
+            self.front_new_project(vault, front, rel)
         except ValueError as exc:
             return dict(base, reason=f"{exc}. Fix the frontmatter; the file is read again once it changes.")
         projects = [p for p in project_candidates(vault, text[:6000]) if p["status"] not in {"done", "dropped"}]
@@ -447,13 +464,13 @@ class DocumentIntake:
         return day if day > today else None
 
     @staticmethod
-    def front_new_project(vault: Vault, front: dict[str, Any]) -> str:
+    def front_new_project(vault: Vault, front: dict[str, Any], source_rel: str) -> str:
         """Frontmatter 'new_project: NAME' creates that project; its actions become the project's steps."""
         raw = str(front.get("new_project") or "").strip().strip("[]\"")
         if not raw:
             return ""
         key = project_key(raw)
-        if key in vault.projects or key.casefold() in vault.by_stem:
+        if key in vault.projects or any(rel != source_rel for rel in vault.by_stem.get(key.casefold(), [])):
             raise ValueError(f"A note named {key} already exists. Use project: \"[[{key}]]\" instead")
         return key
 
@@ -462,7 +479,7 @@ class DocumentIntake:
         s = self.settings
         front = front or {}
         start_all = self.front_start(front, today)
-        new_key = self.front_new_project(vault, front)
+        new_key = self.front_new_project(vault, front, rel)
         if new_key:
             return self.compile_new_project(vault, rel, name, text, sha, clean, today, front, new_key, start_all)
         target = clean["target"]
@@ -556,7 +573,8 @@ class DocumentIntake:
         if area and vault.areas[area].private:
             raise ValueError(f"{area} is private; a brief sent to a model cannot create a project there")
         folder = clean["folder"] or f"{s.reference_dir}/DOCUMENTS"
-        ref_rel = self.reference_path(folder, name)
+        reference_name = f"{key}_BRIEF.md" if _file_stem(name).casefold() == key.casefold() else name
+        ref_rel = self.reference_path(folder, reference_name)
         ref_stem = ref_rel.rsplit("/", 1)[-1][:-3]
         title = clean["title"] or Path(name).stem
         outcome = _plain(front.get("outcome") or title, 300)
@@ -576,7 +594,30 @@ class DocumentIntake:
                                           {"op": "create_file", "path": ref_rel, "text": reference},
                                           {"op": "remove_file", "path": rel, "sha": sha}]
         items: list[dict[str, Any]] = []
-        for deadline in clean["deadlines"]:
+        source_tasks = parse_tasks(text)
+        structured = bool(source_tasks) and all(not task.is_open or task.context or task.is_waiting
+                                               for task in source_tasks)
+        if structured:
+            # Existing GTD syntax is the user's plan, not material for lossy model re-extraction.
+            # Keep its task list authoritative; the model summary still records other dated facts.
+            for task in source_tasks:
+                if not task.is_open:
+                    continue
+                if not task.metadata_ok:
+                    raise ValueError("A checklist task has invalid metadata; correct its dates before importing")
+                line = task.raw.strip()
+                marker = task.block_id or f"gtd-{new_marker()}"
+                if not task.block_id:
+                    line += f" ^{marker}"
+                if task.created is None:
+                    line = with_date(line, "created", today)
+                if start is not None and (task.start is None or start > task.start):
+                    line = with_date(line, "start", start)
+                section = "Waiting For" if task.is_waiting else "Deadlines" if task.section.casefold() == "deadlines" else "Steps"
+                items.append({"label": f"Checklist · {task.title} → {key} › {section}",
+                              "ops": [{"op": "add_task", "path": project_rel, "section": section,
+                                       "position": "queue", "line": line, "marker": f"^{marker}"}]})
+        for deadline in ([] if structured else clean["deadlines"]):
             marker = f"gtd-{new_marker()}"
             try:
                 line = format_task(deadline["title"], [deadline["context"], "#next"],
@@ -586,7 +627,7 @@ class DocumentIntake:
             items.append({"label": f"Due {_fmt(deadline['due'])} · {deadline['title']} → {key} › Deadlines",
                           "ops": [{"op": "add_task", "path": project_rel, "section": "Deadlines", "position": "end",
                                    "line": line, "marker": f"^{marker}"}]})
-        for number, action in enumerate(clean["actions"]):
+        for number, action in enumerate([] if structured else clean["actions"]):
             marker = f"gtd-{new_marker()}"
             tags = [action["context"]] + (["#next"] if number == 0 else [])
             try:
@@ -602,7 +643,8 @@ class DocumentIntake:
                                    "line": line, "marker": f"^{marker}"}]})
         reason = " ".join([f"Project brief · new active project {key}" + (f" in {area}" if area else "") +
                            f" with {len(items)} item{'s' if len(items) != 1 else ''}.", clean["explanation"],
-                           *clean["notes"], "Step 1 carries #next. If you untick it, tag another step #next by hand.",
+                           *clean["notes"], ("Explicit checklist preserved: dates, next-action tags and waits; completed tasks are not reopened."
+                                             if structured else "Step 1 carries #next. If you untick it, tag another step #next by hand."),
                            f"{s.document_model} read the whole file; Python checked every date and link."]).strip()
         return {"kind": "document", "title": f"New project {key}", "source_file": rel,
                 "summary": f"New project {project_rel}; brief filed as {ref_rel}", "reason": reason,

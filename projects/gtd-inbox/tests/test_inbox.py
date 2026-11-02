@@ -72,6 +72,80 @@ class ExplicitCaptureTests(VaultCase):
         line = proposal["ops"][0]["line"]
         self.assertTrue(line.startswith("- [ ] #waiting Morgan Lee: budget numbers 📅 2026-10-05 ➕ 2026-09-28"))
         self.assertEqual(proposal["ops"][0]["section"], "Waiting For")
+        review = self.read("_agent/APPROVAL.md")
+        self.assertIn("**Follow up by:** 2026-10-05", review)
+        self.assertIn("- [ ] Save follow-up date", review)
+
+    def test_waiting_follow_up_date_can_be_saved_before_approval(self):
+        self.add_inbox("- [ ] #waiting Morgan Lee: budget numbers [[DEMO_PROJECT]]")
+        self.agent.scan()
+        review = self.read("_agent/APPROVAL.md").replace("**Follow up by:** 2026-10-05",
+                                                      "**Follow up by:** 2026-10-10")
+        self.write("_agent/APPROVAL.md", review)
+        self.agent.render_reviews()
+        self.assertIn("**Follow up by:** 2026-10-10", self.read("_agent/APPROVAL.md"))
+        self.tick("Save follow-up date")
+        self.assertIn("Saved follow-up date", self.agent.sync_review_requests()[0])
+        review = self.read("_agent/APPROVAL.md")
+        self.assertIn("**Follow up by:** 2026-10-10", review)
+        self.assertIn("📅 2026-10-10", review)
+        self.assertNotIn("📅 2026-10-05", review)
+        self.assertIn("Morgan Lee", self.read("00_INBOX/INBOX.md"))
+        self.tick()
+        self.assertIn("Applied waiting_for", self.agent.sync_review_requests()[0])
+        self.assertIn("📅 2026-10-10", self.read("02_PROJECTS/DEMO_PROJECT/DEMO_PROJECT.md"))
+
+    def test_waiting_date_must_be_saved_before_approval(self):
+        self.add_inbox("- [ ] #waiting Morgan Lee: budget numbers [[DEMO_PROJECT]]")
+        self.agent.scan()
+        review = self.read("_agent/APPROVAL.md").replace("**Follow up by:** 2026-10-05",
+                                                      "**Follow up by:** 2026-10-10")
+        self.write("_agent/APPROVAL.md", review)
+        self.tick()
+        self.assertIn("Save follow-up date before Approve", self.agent.sync_review_requests()[0])
+        self.assertIn("**Follow up by:** 2026-10-10", self.read("_agent/APPROVAL.md"))
+        self.assertNotIn("Morgan Lee", self.read("02_PROJECTS/DEMO_PROJECT/DEMO_PROJECT.md"))
+
+    def test_waiting_date_rejects_invalid_and_early_values(self):
+        self.add_inbox("- [ ] #waiting Morgan Lee: budget numbers [[DEMO_PROJECT]]")
+        self.agent.scan()
+        for value in ("tomorrow", "2026-09-27"):
+            review = self.read("_agent/APPROVAL.md").replace("**Follow up by:** 2026-10-05",
+                                                          f"**Follow up by:** {value}")
+            self.write("_agent/APPROVAL.md", review)
+            self.tick("Save follow-up date")
+            self.assertIn("follow-up date", self.agent.sync_review_requests()[0])
+            self.assertIn(f"**Follow up by:** {value}", self.read("_agent/APPROVAL.md"))
+            self.write("_agent/APPROVAL.md", self.read("_agent/APPROVAL.md")
+                       .replace(f"**Follow up by:** {value}", "**Follow up by:** 2026-10-05"))
+
+    def test_waiting_date_does_not_unlock_other_preview_edits(self):
+        self.add_inbox("- [ ] #waiting Morgan Lee: budget numbers [[DEMO_PROJECT]]")
+        self.agent.scan()
+        review = self.read("_agent/APPROVAL.md").replace("**Follow up by:** 2026-10-05",
+                                                      "**Follow up by:** 2026-10-10")
+        review = review.replace("Morgan Lee: budget numbers 📅", "Morgan Lee: surprise 📅")
+        self.write("_agent/APPROVAL.md", review)
+        self.tick("Save follow-up date")
+        self.assertIn("preview text was edited", self.agent.sync_review_requests()[0])
+
+    def test_mail_wait_item_has_its_own_editable_date(self):
+        self.add_inbox("- [ ] #waiting Morgan Lee: budget numbers [[DEMO_PROJECT]]")
+        wait = self.agent.scan().new_proposals[0]["proposal"]
+        mail = dict(wait, kind="mail", title="Budget request", base_ops=[],
+                    items=[{"label": "Wait · Morgan Lee", "ops": wait["ops"]}], ops=wait["ops"])
+        proposal_id = self.agent.ledger.upsert("mail", "test-mail-wait", mail)
+        self.agent.render_reviews()
+        review = self.read("_agent/APPROVAL.md")
+        self.assertIn("**Follow up by (item 1):** 2026-10-05", review)
+        review = review.replace("**Follow up by (item 1):** 2026-10-05",
+                                "**Follow up by (item 1):** 2026-10-10")
+        self.write("_agent/APPROVAL.md", review)
+        self.tick("Save follow-up date", proposal_id)
+        self.assertIn("Saved follow-up date", self.agent.sync_review_requests()[0])
+        self.tick("Approve", proposal_id)
+        self.assertIn("Applied mail", self.agent.sync_review_requests()[0])
+        self.assertIn("📅 2026-10-10", self.read("02_PROJECTS/DEMO_PROJECT/DEMO_PROJECT.md"))
 
     def test_private_or_unknown_capture_stays_manual(self):
         self.add_inbox("call the bank about fees #private", "Plan [[NOPE]] #computer", "think about summer")
@@ -86,10 +160,28 @@ class ExplicitCaptureTests(VaultCase):
         self.assertNotIn("Teacher feedback", block)  # private text never goes to a model
 
     def test_secret_is_redacted(self):
-        self.add_inbox("api_key = " + "sk" + "-" + "a" * 22 + " #computer")
+        self.add_inbox("api_key = sk" + "-" + "abcdefghijklmnopqrstuv #computer")
         proposal = self.agent.scan().new_proposals[0]["proposal"]
         self.assertEqual(proposal["source"], "[redacted]")
         self.assertNotIn("sk-abcdef", self.read("_agent/APPROVAL.md"))
+
+    def test_approval_keeps_change_visible_and_metadata_collapsed(self):
+        self.add_inbox("Buy stamps #errands")
+        self.agent.scan()
+        review = self.read("_agent/APPROVAL.md")
+        self.assertIn("<details><summary>Details</summary>", review)
+        self.assertIn("Change:\n<pre>", review)
+        self.assertIn("- [ ] Approve", review)
+        self.assertIn("Source: Buy stamps", review.split("<details><summary>Details</summary>", 1)[1]
+                      .split("</details>", 1)[0])
+
+    def test_approval_removes_old_intro_and_instruction_lines(self):
+        self.add_inbox("Buy stamps #errands")
+        self.agent.scan()
+        review = self.read("_agent/APPROVAL.md")
+        self.assertNotIn("The GTD agent's proposals. Rules:", review)
+        self.assertNotIn("Check one box per item.", review)
+        self.assertIn("## Inbox", review)
 
     def test_reject_keeps_the_line_and_is_not_reproposed(self):
         self.add_inbox("Buy stamps #errands")
@@ -131,6 +223,17 @@ class ModelCaptureTests(VaultCase):
         self.provider.interpretations.append(value)
         return self.agent.scan().new_proposals[0]
 
+    def test_clarification_shows_question_and_answer_without_source_heading(self):
+        self.scan_one("A long brainstorm about several event activities and food",
+                      draft(route="needs_clarification", question="Which project is this for?"))
+        review = self.read("_agent/APPROVAL.md")
+        visible = review.split("<details><summary>Details</summary>", 1)[0]
+        self.assertIn("### Needs clarification", visible)
+        self.assertIn("Which project is this for?", visible)
+        self.assertNotIn("A long brainstorm", visible)
+        self.assertIn("**Your answer:**", review)
+        self.assertIn("- [ ] Answer question", review)
+
     def test_next_action_for_a_project(self):
         item = self.scan_one("need to email the advisor again about the lab",
                              draft(title="Email the advisor again", project_key="DEMO_PROJECT", time_estimate="15m"))
@@ -151,8 +254,8 @@ class ModelCaptureTests(VaultCase):
         self.assertIn("Missing year uses 2026", item["proposal"]["clarification"]["assumptions"])
 
     def test_start_date_is_not_a_deadline(self):
-        item = self.scan_one("start studying for FAR on October 13th",
-                             draft(title="Start studying for FAR", start_evidence="October 13th", context="#computer"))
+        item = self.scan_one("start studying for TOPIC on October 13th",
+                             draft(title="Start studying for TOPIC", start_evidence="October 13th", context="#computer"))
         line = item["proposal"]["ops"][0]["line"]
         self.assertIn("🛫 2026-10-13", line)
         self.assertNotIn("📅", line)
@@ -214,9 +317,9 @@ class ModelCaptureTests(VaultCase):
         text = item["proposal"]["ops"][0]["text"]
         self.assertIn("status: someday", text)
         self.assertIn("review: 2027-09-28", text)
-        vague = self.scan_one("after my cpa exams, learn rust",
+        vague = self.scan_one("after my certification exams, learn rust",
                               draft(route="new_project", name_excerpt="learn rust", project_status="someday",
-                                    title="Learn Rust", start_evidence="after my cpa exams"))
+                                    title="Learn Rust", start_evidence="after my certification exams"))
         text = vague["proposal"]["ops"][0]["text"]
         self.assertIn("review:\n", text)
         self.assertIn("is not a date", text)

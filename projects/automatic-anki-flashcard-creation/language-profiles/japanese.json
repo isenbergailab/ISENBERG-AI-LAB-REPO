@@ -1,0 +1,21 @@
+{
+  "name": "Japanese vocabulary",
+  "target_language": "ja",
+  "explanation_language": "en",
+  "roles": {
+    "Prompt": "Dictionary headword in its standard Japanese written form.",
+    "Answer": "Concise everyday English meanings, with synonyms separated by commas and distinct meaning groups separated by semicolons.",
+    "Notes": "Conventional kana reading prefixed with 'Reading: ', plus only essential usage information.",
+    "Example": "A complete natural Japanese sentence, then <br>, then a complete English translation."
+  },
+  "rules": [
+    "If the screenshot clearly marks one English definition, include only that marked definition.",
+    "Use one to three common English words per meaning group and avoid redundant or archaic synonyms.",
+    "Prefix native dictionary-form verbs with 'to '; do not prefix nouns or suru-nouns with 'to '.",
+    "Preserve every distinct meaning while keeping Answer concise.",
+    "Prefer a source example; enrich from an approved reference only when missing; generate only as a last resort.",
+    "Use hiragana for native-word readings and preserve conventional katakana for katakana headwords."
+  ],
+  "example_separator": "<br>",
+  "approved_reference_domains": ["jisho.org"]
+}

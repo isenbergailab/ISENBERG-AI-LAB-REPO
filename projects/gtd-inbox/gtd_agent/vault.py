@@ -217,6 +217,27 @@ class Vault:
                 return True
         return False
 
+    def where(self, task: Task) -> str:
+        """The note a task lives under, as a link: its project, its area, an area it names, or the single actions."""
+        project = self.project_for_path(task.path)
+        if project is not None:
+            return f"[[{project.key}]]"
+        area = self.area_for_path(task.path)
+        if area is not None:
+            return f"[[{area.key}]]"
+        linked = next((link for link in task.links if link in self.areas), None)
+        if linked:
+            return f"[[{linked}]]"
+        return "[[SINGLE_ACTIONS]]"
+
+    def display_title(self, task: Task) -> str:
+        """A task's words as one line: no tags, and no area link it only carries for filing."""
+        title = task.title
+        for link in task.links:
+            if link in self.areas:
+                title = title.replace(link, "").strip()
+        return re.sub(r"\s+", " ", title).strip() or task.description
+
     def status_for(self, rel: str) -> str | None:
         project = self.project_for_path(rel)
         if project is not None:

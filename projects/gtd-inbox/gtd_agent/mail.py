@@ -33,7 +33,7 @@ from .clarification import (area_candidates, blank_draft, calendar_by_hand, comp
 from .core import Settings
 from .drafts import address as mail_address, draft_op, write_draft
 from .pdf import PdfError, is_pdf, pdf_text
-from .mailbox import SENT, MailError, Mailbox
+from .mailbox import SENT, BridgeClosed, MailError, Mailbox
 from .providers import ProviderError
 from .screen import ORDER, screen
 from .tasks import Task, with_dependency, with_id, with_tag, without_dependency
@@ -213,6 +213,7 @@ class Forward:
     body: str = ""                # the original's text, quoted history cut
     attachments: tuple[Attachment, ...] = ()
     passed_on: tuple[str, ...] = ()  # addresses in a message the sender passed on: screened like the sender's
+    automated: bool = False       # a list, newsletter or no-reply sender: nobody to write back to
 
 
 class _HtmlText(HTMLParser):
@@ -409,6 +410,24 @@ def forward_date(text: str, zone: str) -> datetime | None:
         return None
 
 
+NO_REPLY_RE = re.compile(r"(?:^|[._+-])(?:no[._-]?reply|do[._-]?not[._-]?reply|mailer[._-]?daemon|postmaster|bounces?)"
+                         r"(?:$|[._+-])|^(?:notifications?|alerts?|newsletters?|news|marketing|updates?)$", re.IGNORECASE)
+
+
+def _automated(headers: Message | None, address: str) -> bool:
+    """Mail from a no-reply address, a list or a robot: a reply draft to it would go nowhere useful."""
+    if NO_REPLY_RE.search(address.partition("@")[0]):
+        return True
+    if headers is None:
+        return False
+    if headers.get("List-Unsubscribe") or headers.get("List-Id"):
+        return True
+    if str(headers.get("Precedence", "")).strip().lower() in {"bulk", "list", "junk"}:
+        return True
+    auto = str(headers.get("Auto-Submitted", "")).strip().lower()
+    return bool(auto) and auto != "no"
+
+
 def read_forward(raw: bytes, settings: Settings) -> Forward:
     """Read one message: the user's own forward as the original inside it plus his note, his mail to himself as a
     capture, and anyone else's mail as it came."""
@@ -435,11 +454,11 @@ def read_forward(raw: bytes, settings: Settings) -> Forward:
                            forward_date(str(inner.get("Date", "") or ""), settings.timezone),
                            str(inner.get("Subject", "") or ""), _addresses(str(inner.get("To", "") or "")),
                            _addresses(str(inner.get("Cc", "") or "")), _without_history(_text_of(inner).split("\n")),
-                           attachments + _attachments(inner))
+                           attachments + _attachments(inner), automated=_automated(inner, address))
         # an original: someone else's mail as it came, or the user's own to others or with attachments
         return Forward(message_id, True, "", name.strip(), address,
                        forward_date(str(message.get("Date", "") or ""), settings.timezone), subject, to, cc,
-                       _without_history(lines), attachments)
+                       _without_history(lines), attachments, automated=_automated(message, address))
     start, index = found
     fields: dict[str, str] = {}
     while index < len(lines):
@@ -455,12 +474,12 @@ def read_forward(raw: bytes, settings: Settings) -> Forward:
         passed_on = tuple(a for key in ("from", "to", "cc") for a in _addresses(fields.get(key, "")))
         return Forward(message_id, True, "", name.strip(), address,
                        forward_date(str(message.get("Date", "") or ""), settings.timezone), subject, to, cc, body,
-                       attachments, passed_on)
+                       attachments, passed_on, automated=_automated(message, address))
     name, address = parseaddr(fields.get("from", ""))
     return Forward(message_id, True, _note(lines[:start]), name.strip(), address.lower(),
                    forward_date(fields.get("date") or fields.get("sent") or "", settings.timezone),
                    fields.get("subject", ""), _addresses(fields.get("to", "")), _addresses(fields.get("cc", "")),
-                   _without_history(_unquoted(lines[index:])), attachments)
+                   _without_history(_unquoted(lines[index:])), attachments, automated=_automated(None, address))
 
 
 def screen_mail(mail: Forward, settings: Settings) -> str | None:
@@ -579,7 +598,7 @@ class MailIntake:
             candidates = self._labeled(box) if bridge else self._own_mail(box)
         except MailError as exc:  # setup unfinished or Bridge closed: TODAY says what is missing, the log hears it once
             box.close()
-            return self._problem(str(exc))
+            return self._problem(str(exc), isinstance(exc, BridgeClosed))
         self._problem("")
         with closing(box):
             for uid, raw, headers in candidates:
@@ -653,9 +672,13 @@ class MailIntake:
             messages.append(f"Mail: moved {_plural(ignored, 'message')} not from you to {IGNORED}")
         return messages
 
-    def _problem(self, problem: str) -> list[str]:
-        """Why mail can't be read right now ('' once it can). TODAY shows it; the log hears it when it changes."""
+    def _problem(self, problem: str, closed: bool = False) -> list[str]:
+        """Why mail can't be read right now ('' once it can). TODAY shows it; the log hears it when it changes.
+        `closed`: nothing answers where Bridge listens (the phone ping names Bridge, never the details)."""
         previous = self.ledger.kv_get("mail_problem") or ""
+        flag = "1" if closed else ""
+        if (self.ledger.kv_get("mail_closed") or "") != flag:
+            self.ledger.kv_set("mail_closed", flag)
         if problem != previous:
             self.ledger.kv_set("mail_problem", problem)
         return [f"CHECK: mail: {problem}"] if problem and problem != previous else []
@@ -888,7 +911,7 @@ class MailIntake:
         for invite in offered:  # an invitation says exactly when; the model's copy of it is left out below
             try:
                 ops, summary, shown = self._invite_ops(vault, invite, today)
-                items.append({"label": f"Invite · {shown} → {summary}", "ops": ops})
+                items.append({"label": f"Invite · {shown} → {summary}" + self._conflicts(ops), "ops": ops})
             except ValueError as exc:
                 notes.append(f"Invite '{_plain(invite.summary, 80)}' skipped: {exc}.")
         for entry in ([] if offered else (value.get("events") or [])[:10]):
@@ -902,7 +925,7 @@ class MailIntake:
                                                    "due_evidence": day, "time_evidence": time,
                                                    "end_evidence": _plain(entry.get("end_evidence"), 80)},
                                                   {"place": place if supported(place) else ""})
-                items.append({"label": f"Event · {shown} → {summary}", "ops": ops})
+                items.append({"label": f"Event · {shown} → {summary}" + self._conflicts(ops), "ops": ops})
             except ValueError:  # the time is unclear or the day has passed: keep it as a dated action
                 action({"route": "next_action", "title": f"{title} at {time}" if time else title,
                         "context": "#calls", "due_evidence": day})
@@ -930,6 +953,11 @@ class MailIntake:
             items.append({"label": label, "ops": ops})
             if draft is not None:
                 drafts.append(draft)
+        if not claimed:  # an answered wait already carries this mail's reply
+            asked = self._ask_reply(vault, mail, value.get("replies"), supported)
+            if asked is not None:
+                items.append(asked[0])
+                drafts.append(asked[1])
         if dropped:
             notes.append(f"Dropped {_plural(dropped, 'item')} the mail did not support.")
         name = mail.sender_name or mail.sender or "someone"
@@ -969,6 +997,34 @@ class MailIntake:
         what = invite.summary + (f" ({invite.location})" if invite.location else "")
         return calendar_by_hand(vault, what, when + (", repeats" if invite.repeats else ""), reference=today,
                                 marker=new_marker())
+
+    def _conflicts(self, ops: list[dict[str, Any]]) -> str:
+        """What a mail's event shares time with on the calendar, ready to follow its box's label."""
+        return "".join(f" · {note}" for note in self.agent.conflicts(ops))
+
+    def _ask_reply(self, vault: Any, mail: Forward, entries: Any,
+                   supported: Any) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        """A draft answer to mail that asks the user something: one box, one draft, no note changes. Only through Bridge,
+        where the draft can be saved; never to an automated sender or to yourself, and only when the model's quote
+        of the question is in the mail. The agent writes what it can and leaves [brackets] for his answers."""
+        s = self.settings
+        if not (s.mail_reply_drafts and s.mail_source == "bridge" and "@" in mail.sender and not mail.automated
+                and not _own(mail.sender, s)):
+            return None
+        asks = next((_plain(entry.get("asks"), 300) for entry in (entries or [])[:3]
+                     if isinstance(entry, dict) and supported(entry.get("evidence"))), "")
+        if not asks:
+            return None
+        draft = write_draft(self.agent, vault, "answer", {
+            "to_name": mail.sender_name, "asks": asks, "their_subject": mail.subject,
+            "their_mail": mail.body[:4000], "note": mail.note})
+        if draft is None:
+            return None
+        who = _plain(mail.sender_name or mail.sender, 80)
+        to = mail_address(mail.sender_name, mail.sender)
+        label = f"Reply · draft to {who}: {_plain(draft['subject'], 100)} → saved to your Proton Drafts"
+        return ({"label": label, "ops": [draft_op(draft, to, mail.message_id)]},
+                {"title": f"Reply to {who}", "to": to, "saved": True, **draft})
 
     def _replied(self, vault: Any, wait: Task, today: date,
                  mail: Forward) -> tuple[list[dict[str, Any]], str, dict[str, Any] | None]:

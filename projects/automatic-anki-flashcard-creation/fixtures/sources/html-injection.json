@@ -1,0 +1,20 @@
+{
+  "eligible": true,
+  "source_id": "html-source-1",
+  "source_type": "text",
+  "fields": {
+    "Prompt": "<img src=x onerror=alert(1)>",
+    "Answer": "A & B",
+    "Notes": "<script>bad()</script>",
+    "Example": ["<b>not trusted markup</b>", "A < B & B > C"]
+  },
+  "provenance": {
+    "Prompt": "source",
+    "Answer": "source",
+    "Notes": "source",
+    "Example": "source"
+  },
+  "uncertain_fields": [],
+  "review_required": false,
+  "issues": []
+}

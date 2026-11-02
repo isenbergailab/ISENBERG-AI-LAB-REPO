@@ -29,6 +29,7 @@ EVIDENCE_FIELDS = ("person", "due_evidence", "start_evidence", "since_evidence",
                    "name_excerpt", "first_step", "time_evidence", "end_evidence")
 CONTEXT_HEADING = {"#computer": "@computer", "#calls": "@calls", "#anywhere": "@anywhere", "#errands": "@errands"}
 SPECIAL_TAGS = {"#next", "#waiting", "#someday", "#private", "#research", "#event"}
+PRIVATE_TAG = "#private"
 EVENT_TIMES_RE = re.compile(r"(?i)(?<![\d:])(\d{1,2}:\d{2}(?:\s*[ap]\.?m\.?)?|\d{1,2}\s*[ap]\.?m\.?)(?![\w:])"
                             r"(?:\s*[-–]\s*(\d{1,2}(?::\d{2})?(?:\s*[ap]\.?m\.?)?)(?![\w:]))?")
 EVENT_NEEDS = "An #event needs a day and a time, like 'Dentist #event 2026-10-14 15:30' (an end is optional: 15:30-16:15)"
@@ -115,7 +116,8 @@ ROUTE_LABEL = {"next_action": "Next action", "waiting_for": "Waiting for", "proj
                "drop_reason": "Why drop", "drop_knock": "After a drop", "lint_choice": "Vault choice",
                "outcome_change": "Outcome changed", "current_state": "Current state",
                "manual": "Needs clarification", "mail": "Mail", "contact": "Contact",
-               "after_event": "What came out of it?", "after_event_steps": "Steps after an event"}
+               "after_event": "What came out of it?", "after_event_steps": "Steps after an event",
+               "birthday_import": "Birthday reminders"}
 
 
 def blank_draft(**values: str) -> dict[str, str]:
@@ -188,11 +190,13 @@ def _words(text: str) -> set[str]:
         "i", "a", "the", "to", "and", "for", "of", "with", "in", "my", "it", "is", "on", "at", "me"}
 
 
-def project_candidates(vault: Vault, capture: str, limit: int = 40) -> list[dict[str, Any]]:
+def project_candidates(vault: Vault, capture: str, limit: int = 40, *, private: bool = False) -> list[dict[str, Any]]:
+    """Projects a model may be told about. Private ones are named to the private model only."""
     words = _words(capture)
     rows = []
     for project in vault.projects.values():
-        if project.archived or vault.is_private_project(project) or project.status in {"done", "dropped"}:
+        if project.archived or (vault.is_private_project(project) and not private) \
+                or project.status in {"done", "dropped"}:
             continue
         name = project.key.replace("_", " ").title()
         terms = _words(" ".join([project.key.replace("_", " "), *project.aliases]))
@@ -206,16 +210,38 @@ def area_candidates(vault: Vault) -> list[dict[str, Any]]:
     return [{"key": area.key, "aliases": area.aliases[:6]} for area in sorted(vault.areas.values(), key=lambda a: a.key)]
 
 
-def item_candidates(vault: Vault, capture: str, limit: int = 8) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def quick_update_task(vault: Vault, capture: str) -> Any:
+    """Resolve the plugin's exact source block, including a task already completed locally."""
+    if not capture.casefold().startswith("quick update:"):
+        return None
+    source = re.search(r"\(source:\s*(\[\[[^\]\n]+\]\])\)", capture, re.I)
+    links = list(iter_links(source.group(1))) if source else []
+    if len(links) != 1 or not links[0].heading.startswith("^"):
+        return None
+    link = links[0]
+    path = link.target.replace("\\", "/")
+    if not path.lower().endswith(".md"):
+        path += ".md"
+    matches = [task for task in vault.tasks if task.path.casefold() == path.casefold()
+               and task.block_id == link.heading[1:]]
+    return matches[0] if len(matches) == 1 else None
+
+
+def item_candidates(vault: Vault, capture: str, limit: int = 8, *,
+                    private: bool = False) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Open tasks a model may be told about. Private ones are named to the private model only."""
     words = _words(capture)
+    source = quick_update_task(vault, capture)
     ranked = []
     for task in vault.tasks:
-        if not task.is_open or vault.is_private_task(task) or SECRET_RE.search(task.raw):
+        if not task.is_open or (vault.is_private_task(task) and not private) or SECRET_RE.search(task.raw):
             continue
         project = vault.project_for_path(task.path)
         if project is None and task.path != vault.settings.single_actions and vault.area_for_path(task.path) is None:
             continue
         score = len(words & _words(task.title))
+        if source is not None and (task.path, task.block_id) == (source.path, source.block_id):
+            score += len(words) + 10  # an explicit source outranks incidental word overlap
         if project is not None and (project.key.casefold() in capture.casefold()
                                     or any(a.casefold() in capture.casefold() for a in project.aliases)):
             score += 3
@@ -265,8 +291,8 @@ def parse_structured(text: str, vault: Vault) -> dict[str, Any] | None:
     body = TAG_RE.sub("", body)
     body = re.sub(r"\s+", " ", body).strip(" -")
     extra = [tag for tag in tags if tag not in CONTEXTS and tag not in SPECIAL_TAGS]
-    if "#private" in tags:
-        extra.append("#private")
+    if PRIVATE_TAG in tags:
+        extra.append(PRIVATE_TAG)
     base = {"project": project, "area": area, "dates": dates, "extra_tags": extra, "unknown_links": unknown,
             "recurrence": recurrence, "explicit_next": "#next" in tags}
     if "#event" in tags:
@@ -309,11 +335,13 @@ NOT_WRITTEN = {"Why": "_Why it matters to you. Not written yet._",
 
 def project_note_text(key: str, status: str, area: str | None, due: date | None, outcome: str, today: date, *,
                       review: date | None = None, steps: list[str] | None = None, questions: list[str] | None = None,
-                      notes: list[str] | None = None, log: str = "Project created from the Inbox.") -> str:
+                      notes: list[str] | None = None, log: str = "Project created from the Inbox.",
+                      private: bool = False) -> str:
     """A new project note in the VAULT_RULES template: every section, in order, so it reads cold."""
     lines = ["---", f"key: {key}", "type: project", f"status: {status}",
              f"area: \"[[{area}]]\"" if area else "area:", f"due: {due.isoformat() if due else ''}".rstrip(),
-             "priority:", "aliases: []", f"review: {review.isoformat() if review else ''}".rstrip(), "private: false",
+             "priority:", "aliases: []", f"review: {review.isoformat() if review else ''}".rstrip(),
+             f"private: {'true' if private else 'false'}",
              "---", f"# {key}", "",
              "## Outcome", outcome, "",
              "## Why", NOT_WRITTEN["Why"], "",
@@ -332,11 +360,11 @@ def project_note_text(key: str, status: str, area: str | None, due: date | None,
 
 def _project_note_text(key: str, status: str, area: str | None, due: date | None, outcome: str,
                        first_step_line: str | None, capture: str, today: date, review: date | None = None,
-                       review_question: str = "") -> str:
+                       review_question: str = "", private: bool = False) -> str:
     questions = ["> [!question] Review date", f"> {review_question}"] if review_question else None
     return project_note_text(key, status, area, due, outcome, today, review=review,
                              steps=[first_step_line] if first_step_line else None, questions=questions,
-                             notes=["### Original Inbox capture", f"> {capture}"])
+                             notes=["### Original Inbox capture", f"> {capture}"], private=private)
 
 
 def research_request_text(key: str, capture: str, today: date) -> str:
@@ -456,7 +484,8 @@ def compile_ops(vault: Vault, draft: dict[str, Any], *, capture: str, reference:
         if project is None:
             raise ValueError("A project note needs a project")
         title = clean_text(draft["title"])
-        ops = [{"op": "append_log", "path": project.rel, "entry": f"{reference.isoformat()} {title}"}]
+        tag = " #private" if PRIVATE_TAG in draft.get("extra_tags", []) else ""
+        ops = [{"op": "append_log", "path": project.rel, "entry": f"{reference.isoformat()} {title}{tag}"}]
         summary = f"Log entry in {project.key}"
         if draft.get("research"):
             ops.append(_research_op(vault, project.key, capture, reference))
@@ -479,7 +508,8 @@ def compile_ops(vault: Vault, draft: dict[str, Any], *, capture: str, reference:
         outcome = clean_text(plain_words(draft["title"]))
         review = dates.get("review") if status == "someday" else None
         text = _project_note_text(key, status, area, dates.get("due"), outcome, step_line, capture, reference,
-                                  review=review, review_question=draft.get("review_question", ""))
+                                  review=review, review_question=draft.get("review_question", ""),
+                                  private=PRIVATE_TAG in draft.get("extra_tags", []))
         path = f"{settings.projects_dir}/{key}/{key}.md"
         ops = [{"op": "create_file", "path": path, "text": text}]
         summary = f"New project {key} ({status}" + (f", review {review.isoformat()})" if review else ")")
@@ -491,7 +521,8 @@ def compile_ops(vault: Vault, draft: dict[str, Any], *, capture: str, reference:
         title = clean_text(draft["title"])
         review = dates.get("review")
         text = title + (f" · [[{project.key}]]" if project is not None else "") + \
-            (f" · review {review.isoformat()}" if review else "")
+            (f" · review {review.isoformat()}" if review else "") + \
+            (" #private" if PRIVATE_TAG in draft.get("extra_tags", []) else "")
         if draft.get("research"):
             raise ValueError("#research needs a project. Describe it as a project, or name an existing one")
         return ([{"op": "append_bullet", "path": settings.someday, "section": "Added from the Inbox", "text": text}],
@@ -511,8 +542,11 @@ def compile_ops(vault: Vault, draft: dict[str, Any], *, capture: str, reference:
             f"{start:%a %b} {start.day} {start:%H:%M} to {end:%a %b} {end.day} {end:%H:%M}"
         when += ", repeats" if draft.get("repeats") else ""
         if not (settings.calendar_enabled and settings.calendar_source == "folder"):
-            return calendar_by_hand(vault, title, when, reference=reference, marker=marker,
-                                    extra_tags=draft.get("extra_tags", []))
+            ops, summary, shown = calendar_by_hand(vault, title, when, reference=reference, marker=marker,
+                                                   extra_tags=draft.get("extra_tags", []))
+            ops[0]["event"] = {"title": title, "start": start.isoformat(timespec="minutes"),
+                               "end": end.isoformat(timespec="minutes")}  # for the conflict check; not written
+            return ops, summary, shown
         name = settings.calendar_name or "the calendar"
         op = {"op": "calendar_add", "path": "calendar", "calendar": name, "uid": f"gtd-{marker}", "summary": title,
               "start": start.isoformat(timespec="minutes"), "end": end.isoformat(timespec="minutes"),

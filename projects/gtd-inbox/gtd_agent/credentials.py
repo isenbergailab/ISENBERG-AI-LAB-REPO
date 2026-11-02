@@ -18,6 +18,8 @@ NAMES = {
 }
 SERVICE = "gtd-agent"
 SECRET_NAME_RE = re.compile(r"[a-z][a-z0-9_-]{1,31}")
+MAIL_SECRET = "agent-mail"  # the mail connection's password
+RESERVED = {*NAMES, MAIL_SECRET}  # secrets that already have a job: no other connection may be handed one
 
 
 def secret_names(name: str) -> tuple[str, str]:

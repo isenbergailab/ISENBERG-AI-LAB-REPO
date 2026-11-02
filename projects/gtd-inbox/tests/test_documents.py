@@ -262,18 +262,63 @@ outcome: The GTD agent reads my calendar and labeled Gmail
 # Calendar and Gmail integrations
 
 ## Steps
-- [ ] Install Radicale on the Acer with pip
+- [ ] Install Radicale on the vault computer with pip
 - [ ] Create a GTD label in Gmail
 """
 
 
 class ProjectBriefTest(DocumentCase):
+    def test_blocked_brief_recovers_when_name_collision_clears_without_source_edits(self):
+        collision = "04_REFERENCE/DOCUMENTS/CALENDAR_AND_GMAIL.md"
+        self.path(collision).parent.mkdir(parents=True, exist_ok=True)
+        self.write(collision, "# Existing reference\n")
+        self.drop("CALENDAR_AND_GMAIL.md", BRIEF)
+        self.run_housekeeping()
+        row = self.pending("document")[0]
+        self.assertEqual(json.loads(row["proposal_json"])["kind"], "manual")
+        self.assertIn("already exists", json.loads(row["proposal_json"])["reason"])
+        self.run_housekeeping()
+        self.assertEqual(self.pending("document")[0]["id"], row["id"])
+        self.assertFalse([c for c in self.provider.calls if c[0] == "document"])
+        self.path(collision).unlink()
+        self.provider.documents.append(dict(ANSWER, deadlines=[], actions=[]))
+        self.run_housekeeping()
+        refreshed = self.pending("document")[0]
+        self.assertNotEqual(refreshed["id"], row["id"])
+        self.assertEqual(json.loads(refreshed["proposal_json"])["kind"], "document")
+        self.assertEqual(self.read("00_INBOX/CALENDAR_AND_GMAIL.md"), BRIEF)
+        self.assertFalse(self.path("02_PROJECTS/CALENDAR_AND_GMAIL/CALENDAR_AND_GMAIL.md").exists())
+        self.run_housekeeping()
+        self.assertEqual(len([c for c in self.provider.calls if c[0] == "document"]), 1)
+
+    def test_brief_can_share_its_new_project_name_and_waits_for_approval(self):
+        source = "00_INBOX/CALENDAR_AND_GMAIL.md"
+        self.provider.documents.append(dict(ANSWER, deadlines=[], actions=[]))
+        self.drop("CALENDAR_AND_GMAIL.md", BRIEF)
+        self.run_housekeeping()
+        row = self.pending("document")[0]
+        proposal = json.loads(row["proposal_json"])
+        self.assertEqual(proposal["kind"], "document")
+        self.assertEqual(proposal["title"], "New project CALENDAR_AND_GMAIL")
+        project = "02_PROJECTS/CALENDAR_AND_GMAIL/CALENDAR_AND_GMAIL.md"
+        self.assertFalse(self.path(project).exists())
+        self.assertTrue(self.path(source).exists())
+        self.run_housekeeping()
+        self.assertEqual(len([c for c in self.provider.calls if c[0] == "document"]), 1)
+        self.tick("Approve", row["id"])
+        self.agent.sync_review_requests()
+        self.assertTrue(self.path(project).exists())
+        self.assertFalse(self.path(source).exists())
+        self.assertEqual(self.agent.vault().by_stem["calendar_and_gmail"], [project])
+        self.assertIn("[[CALENDAR_AND_GMAIL_BRIEF]]", self.read(project))
+        self.assertTrue(self.path("04_REFERENCE/DOCUMENTS/CALENDAR_AND_GMAIL_BRIEF.md").exists())
+
     def test_brief_creates_project_with_held_steps(self):
         self.provider.documents.append({
             "doc_type": "notes", "title": "Calendar and Gmail integrations", "course": "", "target_key": "",
             "reference_folder": "", "summary": "Plan to connect a calendar and Gmail.", "facts": [], "deadlines": [],
-            "actions": [{"title": "Install Radicale on the Acer with pip", "context": "#computer", "due": "",
-                         "evidence": "Install Radicale on the Acer with pip"},
+            "actions": [{"title": "Install Radicale on the vault computer with pip", "context": "#computer", "due": "",
+                         "evidence": "Install Radicale on the vault computer with pip"},
                         {"title": "Create a GTD label in Gmail", "context": "#computer", "due": "",
                          "evidence": "Create a GTD label in Gmail"}],
             "explanation": "A project brief."})
@@ -290,7 +335,7 @@ class ProjectBriefTest(DocumentCase):
         self.assertIn("status: active", note)
         self.assertIn('area: "[[AREA_CLUB]]"', note)
         self.assertIn("The GTD agent reads my calendar and labeled Gmail", note)
-        self.assertIn("- [ ] Install Radicale on the Acer with pip #computer #next 🛫 2026-10-14 ➕ 2026-09-28", note)
+        self.assertIn("- [ ] Install Radicale on the vault computer with pip #computer #next 🛫 2026-10-14 ➕ 2026-09-28", note)
         self.assertIn("- [ ] Create a GTD label in Gmail #computer 🛫 2026-10-14 ➕ 2026-09-28", note)
         self.assertLess(note.index("Install Radicale"), note.index("Create a GTD label"))
         self.assertNotIn("_No steps yet", note)

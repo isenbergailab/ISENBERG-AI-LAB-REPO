@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import os
 import re
 import shutil
 import tempfile
 import time
+import urllib.parse
 import uuid
 import warnings
 from contextlib import contextmanager
@@ -14,7 +16,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from functools import wraps
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterable, Iterator
+
+from .credentials import RESERVED, SECRET_NAME_RE
 
 try:  # Python 3.11+
     import tomllib as _toml
@@ -34,6 +38,33 @@ TRUSTABLE = ("next_action", "waiting_for", "project_note", "new_project", "somed
              "calendar_event", "decision", "document", "follow_up", "promotion", "someday_topic", "research_report",
              "drop_knock", "outcome_change", "current_state", "mail")
 WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+# What the agent can send you on Telegram on its own ([telegram] pings).
+PINGS = ("brief", "approvals", "bridge")
+# What the private model can do for a private item ([private_model] jobs).
+PRIVATE_JOBS = ("interpret",)
+# Addresses Tailscale hands out: traffic between them is encrypted, so private text may cross a tailnet.
+TAILNET = (ipaddress.ip_network("100.64.0.0/10"), ipaddress.ip_network("fd7a:115c:a1e0::/48"))
+
+
+def private_host_ok(url: str, trusted: Iterable[str] = ()) -> bool:
+    """Whether private text may be sent to this URL: it names this computer, the user's tailnet (an address Tailscale
+    hands out, or a .ts.net name) or a host he listed himself, by its whole name. Anything else is no, and so is a
+    look-alike (127.0.0.1.example.org), a name hidden behind a user name, or a scheme other than http and https."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+        host = (parts.hostname or "").rstrip(".")  # urlsplit made it lower case
+        parts.port  # a port that is not a number raises ValueError
+    except ValueError:
+        return False
+    if parts.scheme not in ("http", "https") or parts.username is not None or not host:  # a password has a user name
+        return False
+    if host == "localhost" or host in {name.rstrip(".").lower() for name in trusted}:
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return host.endswith(".ts.net") and all(host.split("."))
+    return address.is_loopback or any(address in network for network in TAILNET)
 
 
 def digest(data: bytes | str) -> str:
@@ -115,6 +146,20 @@ def _hhmm(value: str, label: str) -> tuple[int, int]:
     return int(match[1]), int(match[2])
 
 
+def _weekday_numbers(value: Any, label: str) -> tuple[int, ...]:
+    """Weekday names ('mon', 'Friday') as numbers, Monday 0, in week order."""
+    if not isinstance(value, list) or not value:
+        raise ValueError(f'{label} must be a list of weekday names, such as ["mon", "tue"]')
+    found = set()
+    for item in value:
+        name = str(item).strip().casefold()
+        match = [number for number, full in enumerate(WEEKDAYS) if name in {full, full[:3]}]
+        if not match:
+            raise ValueError(f"{label}: {item} is not a weekday name")
+        found.add(match[0])
+    return tuple(sorted(found))
+
+
 @dataclass(frozen=True)
 class Settings:
     config_path: Path
@@ -159,8 +204,31 @@ class Settings:
     day_end: tuple[int, int] = (22, 0)
     min_free_minutes: int = 15
     calendar_cache_minutes: int = 30
+    plan_tasks: int = 3                    # how many tasks the day's plan places in free time
+    plan_default_minutes: int = 30         # what a task with no time tag (#15m, #2h) counts for
+    plan_max_block_minutes: int = 120      # the longest block one task gets; a longer task is planned in parts
+    plan_hour: int = 6                     # the plan is made at the first check from this hour
+    plan_days: tuple[int, ...] = (0, 1, 2, 3, 4, 5, 6)  # weekdays (Monday is 0) that get a plan and count as free time
     telegram_enabled: bool = False
     telegram_chat_id: int = 0
+    telegram_capture: str = "direct"               # direct bot polling, or Syncthing relay files
+    telegram_relay_folder: Path | None = None
+    telegram_pings: tuple[str, ...] = ("brief", "approvals", "bridge")  # what the agent sends you on its own
+    telegram_brief: tuple[int, int] = (7, 30)         # the morning brief goes out from this time
+    telegram_quiet_start: tuple[int, int] = (22, 0)   # no ping between these two times
+    telegram_quiet_end: tuple[int, int] = (7, 0)
+    telegram_titles: bool = True                      # pings name things (private ones never); False: counts only
+    telegram_approvals_hours: int = 4                 # an approval that has waited this long is pinged
+    telegram_approvals_gap_hours: int = 8             # the least time between two approvals pings
+    telegram_bridge_minutes: int = 30                 # mail that stays down this long is pinged
+    # The private model: a model on the user's own machines that may read his private items (ADR 0006). Off by default.
+    private_model_enabled: bool = False
+    private_model_url: str = ""                       # an OpenAI-compatible chat endpoint; see private_host_ok
+    private_model_name: str = ""
+    private_model_key: str = ""                       # the saved secret it needs, if any ("set-secret NAME")
+    private_model_hosts: tuple[str, ...] = ()         # hosts besides this computer and the tailnet that url may name
+    private_model_jobs: tuple[str, ...] = PRIVATE_JOBS
+    private_model_timeout: int = 180                  # a small machine answers slowly
     mail_enabled: bool = False
     mail_host: str = ""
     mail_port: int = 993
@@ -176,6 +244,7 @@ class Settings:
     mail_private_senders: tuple[str, ...] = ()
     mail_private_words: tuple[str, ...] = ()
     mail_restricted_domains: tuple[str, ...] = ()
+    mail_reply_drafts: bool = True    # a question in labeled mail gets a draft reply (Bridge only)
     jev_model: str = "typesafe/jev-1.13"
     glm_model: str = "z-ai/glm-5.3-flash"
     document_model: str = "z-ai/glm-5.3"
@@ -194,6 +263,12 @@ class Settings:
 
     def job_model(self, job: str) -> str:
         return self.job_models.get(job) or (self.document_model if job == "documents" else self.glm_model)
+
+    def private_model_ready(self, job: str) -> bool:
+        """Whether private text for this job may go to the private model: it is switched on, listed for the job, and
+        its address is one private text may be sent to."""
+        return bool(self.private_model_enabled and job in self.private_model_jobs
+                    and private_host_ok(self.private_model_url, self.private_model_hosts))
 
     def job_endpoint(self, job: str) -> str:
         return self.job_endpoints.get(job) or self.job_endpoints.get("default") or OPENROUTER_CHAT
@@ -225,6 +300,11 @@ class Settings:
     def log_note(self) -> str:
         return f"{self.agent_dir}/LOG.md"
 
+    @property
+    def blocks_file(self) -> str:
+        """The day's time blocks as a calendar file the user imports into Proton Calendar."""
+        return f"{self.agent_dir}/time-blocks.ics"
+
     @classmethod
     def load(cls, path: Path) -> "Settings":
         path = path.resolve()
@@ -233,6 +313,7 @@ class Settings:
         agent = raw.get("agent", {})
         review = raw.get("review", {})
         calendar = raw.get("calendar", {})
+        plan = raw.get("plan", {})
         telegram = raw.get("telegram", {})
         mail = raw.get("mail", {})
         research = raw.get("research", {})
@@ -274,6 +355,72 @@ class Settings:
         if calendar.get("source") == "folder" and calendar.get("enabled") and not (
                 calendar.get("folder") and calendar.get("user")):
             raise ValueError("[calendar] source = \"folder\" needs folder (Radicale storage) and user")
+        plan_tasks = int(plan.get("tasks", 3))
+        if not 1 <= plan_tasks <= 10:
+            raise ValueError("[plan] tasks must be from 1 to 10")
+        plan_default = int(plan.get("default_minutes", 30))
+        if not 5 <= plan_default <= 480:
+            raise ValueError("[plan] default_minutes must be from 5 to 480")
+        plan_block = int(plan.get("max_block_minutes", 120))
+        if not 15 <= plan_block <= 480:
+            raise ValueError("[plan] max_block_minutes must be from 15 to 480")
+        plan_hour = int(plan.get("hour", 6))
+        if not 0 <= plan_hour <= 23:
+            raise ValueError("[plan] hour must be from 0 to 23")
+        plan_days = _weekday_numbers(plan.get("days", list(WEEKDAYS)), "[plan] days")
+        pings = telegram.get("pings", list(PINGS))
+        if not isinstance(pings, list) or not all(isinstance(kind, str) and kind in PINGS for kind in pings):
+            raise ValueError('[telegram] pings must be a list made of "brief", "approvals" and "bridge"')
+        approvals_hours = int(telegram.get("approvals_hours", 4))
+        if not 0 <= approvals_hours <= 72:
+            raise ValueError("[telegram] approvals_hours must be from 0 to 72")
+        approvals_gap = int(telegram.get("approvals_gap_hours", 8))
+        if not 1 <= approvals_gap <= 72:
+            raise ValueError("[telegram] approvals_gap_hours must be from 1 to 72")
+        bridge_minutes = int(telegram.get("bridge_minutes", 30))
+        if not 0 <= bridge_minutes <= 1440:
+            raise ValueError("[telegram] bridge_minutes must be from 0 to 1440")
+        telegram_capture = str(telegram.get("capture", "direct"))
+        if telegram_capture not in {"direct", "relay"}:
+            raise ValueError('[telegram] capture must be "direct" or "relay"')
+        relay_folder = telegram.get("relay_folder", "")
+        if not isinstance(relay_folder, str):
+            raise ValueError("[telegram] relay_folder must be a folder path")
+        relay_path = Path(relay_folder).expanduser().resolve() if relay_folder else None
+        if telegram_capture == "relay" and relay_path is None:
+            raise ValueError('[telegram] capture = "relay" needs relay_folder')
+        if relay_path is not None and (relay_path == root or root in relay_path.parents):
+            raise ValueError("[telegram] relay_folder must be outside the Obsidian vault")
+        if relay_path is not None and (relay_path == state or state in relay_path.parents
+                                       or relay_path in state.parents):
+            raise ValueError("[telegram] relay_folder must be separate from agent state")
+        private = raw.get("private_model", {})
+        private_enabled = bool(private.get("enabled", False))
+        private_url = str(private.get("url", "")).strip()
+        private_name = str(private.get("model", "")).strip()
+        private_key = private.get("key", "")
+        if not isinstance(private_key, str):
+            raise ValueError('[private_model] key must be the name of a saved secret, such as "local-model"')
+        private_hosts = private.get("trusted_hosts", [])
+        if not isinstance(private_hosts, list) or not all(
+                isinstance(host, str) and host and not re.search(r"[\s/@]", host) for host in private_hosts):
+            raise ValueError('[private_model] trusted_hosts must be a list of host names or addresses, such as ["local-model"]')
+        private_jobs = private.get("jobs", list(PRIVATE_JOBS))
+        if not isinstance(private_jobs, list) or not all(job in PRIVATE_JOBS for job in private_jobs):
+            raise ValueError(f"[private_model] jobs must be a list made of: {', '.join(PRIVATE_JOBS)}")
+        private_timeout = int(private.get("timeout_seconds", 180))
+        if not 5 <= private_timeout <= 1800:
+            raise ValueError("[private_model] timeout_seconds must be from 5 to 1800")
+        if private_enabled:
+            if not private_url or not private_name:
+                raise ValueError("[private_model] needs a url and a model while it is enabled")
+            if private_key.strip() and (private_key.strip() in RESERVED or private_key.strip() in endpoint_keys.values()
+                                        or not SECRET_NAME_RE.fullmatch(private_key.strip())):
+                raise ValueError("[private_model] key must be its own secret, such as \"local-model\" (2-32 lowercase "
+                                 "letters, digits, - or _): not one that OpenRouter, Telegram, mail or another model uses")
+            if not private_host_ok(private_url, private_hosts):
+                raise ValueError("[private_model] url must name this computer or your tailnet (or a host you list in "
+                                 "trusted_hosts): private text goes nowhere else")
         poll = int(agent.get("poll_seconds", 10))
         scan = int(agent.get("scan_interval_seconds", 60))
         if poll < 3 or scan < poll:
@@ -314,10 +461,8 @@ class Settings:
             listed = mail.get(name, [])
             if not isinstance(listed, list) or not all(isinstance(item, str) for item in listed):
                 raise ValueError(f"[mail] {name} must be a list of strings")
-        restricted_domains = tuple(dict.fromkeys(
-            domain.strip().lower() for domain in mail.get("restricted_domains", [])))
-        if any(not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+", domain)
-               for domain in restricted_domains):
+        restricted_domains = tuple(dict.fromkeys(domain.strip().lower() for domain in mail.get("restricted_domains", [])))
+        if any(not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+", domain) for domain in restricted_domains):
             raise ValueError("[mail] restricted_domains must contain domain names, not addresses or URLs")
         address = str(mail.get("address", "")).strip().lower()
         if address and "@" not in address:
@@ -355,8 +500,21 @@ class Settings:
             day_end=_hhmm(calendar.get("day_end", "22:00"), "day_end"),
             min_free_minutes=int(calendar.get("min_free_minutes", 15)),
             calendar_cache_minutes=int(calendar.get("cache_minutes", 30)),
+            plan_tasks=plan_tasks, plan_default_minutes=plan_default, plan_max_block_minutes=plan_block,
+            plan_hour=plan_hour, plan_days=plan_days,
             telegram_enabled=bool(telegram.get("enabled", False)),
             telegram_chat_id=int(telegram.get("chat_id", 0) or 0),
+            telegram_capture=telegram_capture, telegram_relay_folder=relay_path,
+            telegram_pings=tuple(dict.fromkeys(pings)),
+            telegram_brief=_hhmm(telegram.get("brief_time", "07:30"), "[telegram] brief_time"),
+            telegram_quiet_start=_hhmm(telegram.get("quiet_start", "22:00"), "[telegram] quiet_start"),
+            telegram_quiet_end=_hhmm(telegram.get("quiet_end", "07:00"), "[telegram] quiet_end"),
+            telegram_titles=bool(telegram.get("titles", True)),
+            telegram_approvals_hours=approvals_hours, telegram_approvals_gap_hours=approvals_gap,
+            telegram_bridge_minutes=bridge_minutes,
+            private_model_enabled=private_enabled, private_model_url=private_url, private_model_name=private_name,
+            private_model_key=private_key.strip(), private_model_hosts=tuple(private_hosts),
+            private_model_jobs=tuple(dict.fromkeys(private_jobs)), private_model_timeout=private_timeout,
             mail_enabled=bool(mail.get("enabled", False)),
             mail_host=str(mail.get("host", "")).strip(),
             mail_port=mail_port,
@@ -372,6 +530,7 @@ class Settings:
             mail_private_senders=tuple(s.strip().lower() for s in mail.get("private_senders", []) if s.strip()),
             mail_private_words=tuple(w.strip() for w in mail.get("private_words", []) if w.strip()),
             mail_restricted_domains=restricted_domains,
+            mail_reply_drafts=bool(mail.get("reply_drafts", True)),
             jev_model=str(models.get("jev", "typesafe/jev-1.13")),
             glm_model=str(models.get("glm", "z-ai/glm-5.3-flash")),
             document_model=str(models.get("documents", "z-ai/glm-5.3")),

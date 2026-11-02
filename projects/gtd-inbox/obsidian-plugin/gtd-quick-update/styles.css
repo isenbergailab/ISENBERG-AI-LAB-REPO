@@ -1,0 +1,9 @@
+.gtd-agent-task-view .plugin-tasks-query-result .task-id,
+.gtd-agent-task-view .plugin-tasks-query-result .task-created,
+.gtd-agent-task-view .plugin-tasks-query-result .task-due,
+.gtd-agent-task-view .plugin-tasks-query-result .task-description a.tag {display:none!important}
+.gtd-agent-task-view .plugin-tasks-query-result .tasks-edit {display:inline-flex!important;visibility:visible!important;opacity:1!important}
+.gtd-agent-controls {display:inline-flex;gap:.35em;margin-left:.55em}
+.gtd-agent-controls button {padding:0 .45em;font-size:.8em}
+.gtd-agent-inline-details {margin:.3em 0 .5em 2em;color:var(--text-muted);font-size:.85em}
+.gtd-agent-approval-view .markdown-source-view.is-live-preview .cm-line.gtd-agent-marker {display:none!important}

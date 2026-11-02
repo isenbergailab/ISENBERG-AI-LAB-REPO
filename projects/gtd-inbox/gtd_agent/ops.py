@@ -18,6 +18,8 @@ PROJECT_SECTION_ORDER = ("Outcome", "Why", "Context", "Current state", "Steps", 
 
 
 PREVIEW_LINES = 40
+LINKS_BEGIN = "<!-- gtd-agent:topic-links-begin -->"
+LINKS_END = "<!-- gtd-agent:topic-links-end -->"
 
 
 class OpError(RuntimeError):
@@ -245,6 +247,8 @@ def section_text(lines: list[str], name: str) -> str | None:
 def _set_section(lines: list[str], op: dict[str, Any]) -> list[str]:
     """Replace a section's text (the heading stays). It must still hold what the proposal saw ('old')."""
     bounds = section_bounds(lines, op["section"], 2)
+    if bounds is None and op.get("ensure"):
+        lines, bounds = _ensure_section(lines, op["section"])
     if bounds is None:
         raise OpError(f"The note has no {op['section']} section")
     current = section_text(lines, op["section"])
@@ -331,6 +335,25 @@ def apply_op(text: str, op: dict[str, Any], today: date) -> str:
         return _join(_set_property(lines, op))
     if kind == "set_section":
         return _join(_set_section(lines, op))
+    if kind == "set_marked_links":
+        if lines.count(LINKS_BEGIN) != lines.count(LINKS_END) or lines.count(LINKS_BEGIN) > 1:
+            raise OpError("The marked links section is incomplete")
+        new = op["lines"]
+        if any(not re.fullmatch(r"- \[\[[^\[\]\n]+\]\]", line) for line in new):
+            raise OpError("A proposed link is invalid")
+        if LINKS_BEGIN not in lines:
+            if op.get("old"):
+                raise OpError("The marked links section disappeared")
+            return _join([*lines, "", "## Agent links", LINKS_BEGIN, *new, LINKS_END])
+        start, end = lines.index(LINKS_BEGIN), lines.index(LINKS_END)
+        if end <= start:
+            raise OpError("The marked links section is reversed")
+        old = lines[start + 1:end]
+        if old == new:
+            return _join(lines)
+        if old != op.get("old", []):
+            raise OpError("The marked links changed since review")
+        return _join([*lines[:start + 1], *new, *lines[end:]])
     if kind in {"remove_file", "move_file"}:
         raise OpError(f"{kind} is applied by the agent, not as a text edit")
     raise OpError(f"Unknown operation {kind}")
@@ -375,6 +398,10 @@ def describe(op: dict[str, Any], today: date) -> str:
     if kind == "set_section":
         old = "".join(f"\n- {line}" for line in op.get("old", "").split("\n") if line.strip())
         return f"{path} › {op['section']}{old}" + "".join(f"\n+ {line}" for line in op["text"].strip().split("\n"))
+    if kind == "set_marked_links":
+        old, new = set(op.get("old", [])), set(op["lines"])
+        changes = [*(f"- {line}" for line in sorted(old - new)), *(f"+ {line}" for line in sorted(new - old))]
+        return f"{path} › Agent links\n" + "\n".join(changes or ["(no link changes)"])
     if kind == "mail_draft":
         return f"Draft into your Proton Drafts\nTo: {op.get('to') or '(add the address)'} · Subject: {op['subject']}"
     if kind == "create_file":

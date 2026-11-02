@@ -12,26 +12,25 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from .clarification import (ROUTE_LABEL, area_candidates, compile_ops, draft_from_interpretation, ground_split,
-                            item_candidates, new_marker, parse_structured, project_candidates, start_control,
+from .clarification import (PRIVATE_TAG, ROUTE_LABEL, area_candidates, compile_ops, draft_from_interpretation, ground_split,
+                            item_candidates, new_marker, parse_structured, project_candidates, quick_update_task, start_control,
                             validate_interpretation)
 from .core import (REVIEW_BEGIN, REVIEW_END, SECRET_RE, Capture, Settings, Snapshot, append_capture_lines,
                    atomic_replace, destination_hash, digest, move_file, parse_captures, read_snapshot,
                    remove_capture_line, remove_file, single_writer, snapshot_or_empty, stable_snapshot, write_owned)
 from .decisions import (DECIDED_RE, decision_line, decision_sections, decisions_note, open_questions,
                         plain_decision, shown_questions, validate_answer)
-from .feedback import BEGIN as FIELD_BEGIN, OUTCOME_HEADING, REASON_HEADING, split_feedback, with_feedback
+from .feedback import ANSWER_HEADING, BEGIN as FIELD_BEGIN, OUTCOME_HEADING, REASON_HEADING, split_feedback, with_feedback
 from . import radicale
 from .budget import Budget
-from .calendar_ics import event_ics
+from .calendar_ics import Event, event_ics, overlapping
 from .credentials import get_secret
-from .drafts import draft_message, shown as shown_draft
-from .mailbox import Mailbox, MailError
+from .drafts import Outbox, shown as shown_draft
 from .health import Health
 from .ledger import Ledger
 from .markdown import iter_links
-from .ops import OpError, apply_op, describe, expected_line, section_text
-from .providers import OpenRouter, ProviderError
+from .ops import LINKS_BEGIN, LINKS_END, OpError, apply_op, describe, expected_line, section_text
+from .providers import OpenRouter, PrivateModelDown, ProviderError
 from .tasks import TAG_RE, parse_task_line, with_date
 from .vault import Vault
 
@@ -44,17 +43,20 @@ DONE_SUFFIX = r"(?:\s+(?:✅|❌)\s*\d{4}-\d{2}-\d{2})?"
 ITEM_LINE_RE = re.compile(r"^- \[([ xX])\] (\d{1,3})\. ")
 # Any checkbox is a control; the block must still match what the agent wrote, so only offered labels can apply.
 CONTROL_RE = re.compile(r"^- \[([ xX])\] (\S.*?)" + DONE_SUFFIX + r"\s*$")
+FOLLOW_UP_FIELD_RE = re.compile(r"^(\*\*Follow up by(?: \([^)]*\))?:\*\*) (.*)$")
 HOUSEKEEPING = {"followup", "lint", "promotion"}
 UNDO_SHOWN = 30  # every Undo record still available (the ledger keeps 30)
 LOG_KEEP = 300
 LOG_HEADER = ["# LOG", "", "What the GTD agent changed, newest first. To reverse a recent change, tick its Undo box: it "
               "works while the changed note is still as the agent left it. Rules: [[VAULT_RULES]].", ""]
 HISTORY_HEADING = "## History"
-APPROVAL_INTRO = ("Check one box per item. The agent applies it within about 10 seconds while it runs. To correct an "
-                  "Inbox proposal, write under Your correction, then check Teacher feedback. Applied changes, each "
-                  "with its Undo box, are in [[LOG]].")
+APPROVAL_INTRO = ""
+LEGACY_APPROVAL_HEADER = "# APPROVAL\n\nThe GTD agent's proposals. Rules: [[VAULT_RULES]].\n"
 LOG_INTRO = "Tick Undo to reverse a change. The agent does it within about 10 seconds while it runs."
 WRITE_ROOTS_DENIED = (".obsidian", ".trash")
+PRIVATE_BY_HAND = ("Private capture. Write it in vault syntax so it can be filed without a model: "
+                   "add one context tag (#computer, #calls, #anywhere, #errands), or use "
+                   "#waiting Person: what, or #someday.")
 
 
 class ApprovalError(RuntimeError):
@@ -91,9 +93,42 @@ def _normalized_block(body: str) -> str:
             out.append(f"- [ ] {control[0]}")
         elif item:
             out.append(f"- [x] {line.rstrip()[6:]}")  # ticking or unticking an item is not an edit
+        elif FOLLOW_UP_FIELD_RE.fullmatch(line):
+            out.append(FOLLOW_UP_FIELD_RE.sub(r"\1 <editable date>", line))
         else:
             out.append(line.rstrip())
-    return "\n".join(out).strip()
+    normalized = "\n".join(out).strip()
+    marker = UNDO_DECISION if UNDO_DECISION in normalized else DECISION
+    head, separator, tail = normalized.rpartition(marker)
+    controls = [line for line in tail.strip().split("\n") if line.strip()]
+    if separator and controls and all(_control(line) is not None for line in controls):
+        # Control order is presentation only. Preserve existing ticks across layout changes.
+        normalized = head + separator + "\n" + "\n".join(sorted(controls))
+    return normalized
+
+
+def _waiting_fields(proposal: dict[str, Any]) -> list[tuple[str, dict[str, Any], date]]:
+    """Editable follow-up dates, identified by their visible review labels."""
+    groups = ([(f"item {number}", item.get("ops", []))
+               for number, item in enumerate(proposal["items"], 1)] if proposal.get("items") else
+              [("", proposal.get("ops", []))])
+    found = []
+    for group, ops in groups:
+        waits = [(op, task) for op in ops if op.get("op") == "add_task"
+                 if (task := parse_task_line(op.get("line", ""))) is not None and task.is_waiting and task.due]
+        for number, (op, task) in enumerate(waits, 1):
+            suffix = f" ({group})" if group else f" ({number})" if len(waits) > 1 else ""
+            found.append((f"**Follow up by{suffix}:**", op, task.due))
+    return found
+
+
+def _shown_follow_up_dates(body: str) -> dict[str, str]:
+    shown = {}
+    for line in body.splitlines():
+        match = FOLLOW_UP_FIELD_RE.fullmatch(line)
+        if match:
+            shown[match.group(1)] = match.group(2).strip()
+    return shown
 
 
 def _selected_choice(body: str) -> str | None:
@@ -137,6 +172,32 @@ def _review_text(value: Any) -> str:
     return str(value).replace("\r", " ").replace("\n", " ").replace("<", "&lt;").replace(">", "&gt;").strip()
 
 
+def _event_window(op: dict[str, Any]) -> tuple[datetime, datetime, str] | None:
+    """The time a new event takes, from the op that adds it, or None for an op that adds no timed event."""
+    try:
+        if op.get("op") == "calendar_add":
+            return datetime.fromisoformat(op["start"]), datetime.fromisoformat(op["end"]), str(op.get("summary", ""))
+        found = op.get("event")
+        if found:
+            return datetime.fromisoformat(found["start"]), datetime.fromisoformat(found["end"]), str(found.get("title", ""))
+    except (KeyError, TypeError, ValueError):
+        pass
+    return None
+
+
+def _span(event: Event, day: date) -> str:
+    """When an event is, as short as it can be: clock times for one on the day, else the days too."""
+    if event.start.date() == event.end.date() == day:
+        return f"{event.start:%H:%M}–{event.end:%H:%M}"
+    return f"{event.start:%a %H:%M} to {event.end:%a %H:%M}"
+
+
+def overlap_note(clash: list[Event], day: date) -> str:
+    """'Conflict: overlaps Lab (15:00–16:15)': what a new event or block shares time with."""
+    shown = ", ".join(f"{e.summary[:80]} ({_span(e, day)})" for e in clash[:3])
+    return f"Conflict: overlaps {shown}" + (f" and {len(clash) - 3} more" if len(clash) > 3 else "")
+
+
 @dataclass
 class ScanResult:
     new_proposals: list[dict[str, Any]] = field(default_factory=list)
@@ -165,12 +226,59 @@ class Agent:
     def vault(self) -> Vault:
         return Vault(self.settings)
 
+    # ------------------------------------------------------------ conflicts
+    def calendar_events(self, start: datetime, end: datetime) -> tuple[list[Event], str | None]:
+        """The calendar's events that share time with [start, end), and a warning when it could not be read."""
+        from .housekeeping import Housekeeper  # housekeeping imports this module
+        return Housekeeper(self).calendar_events(start, end)
+
+    def calendar_read(self, start: datetime, end: datetime) -> tuple[list[Event] | None, str | None]:
+        """Like calendar_events, but None when the calendar is off or could not be read: not the same as empty."""
+        from .housekeeping import Housekeeper  # housekeeping imports this module
+        return Housekeeper(self).calendar_read(start, end)
+
+    def conflicts(self, ops: list[dict[str, Any]]) -> list[str]:
+        """For each timed event these ops add: what it shares time with on the calendar, or that it is there already.
+        Nothing when the calendar is off or can't be read: an unchecked event is not called clear."""
+        notes: list[str] = []
+        for op in ops:
+            window = _event_window(op)
+            if window is None:
+                continue
+            start, end, title = window
+            events, _ = self.calendar_events(start, end)
+            folded = " ".join(title.casefold().split())
+            same = next((e for e in events if (e.start, e.end) == (start, end) and folded
+                         and (folded in e.summary.casefold() or e.summary.casefold() in folded)), None)
+            if same is not None:
+                notes.append(f"Already on your calendar: {same.summary[:80]} ({_span(same, start.date())})")
+                continue
+            clash = overlapping(events, start, end)
+            if clash:
+                notes.append(overlap_note(clash, start.date()))
+        return list(dict.fromkeys(notes))
+
+    def note_conflicts(self, proposal: dict[str, Any]) -> None:
+        """Write the warnings into a proposal when it is made, so what the user sees does not change under his tick.
+        An itemized proposal (mail) carries its warnings on the boxes they belong to."""
+        if proposal.get("items") or not proposal.get("ops"):
+            return
+        notes = self.conflicts(proposal["ops"])
+        if notes:
+            proposal["conflicts"] = notes
+        else:
+            proposal.pop("conflicts", None)
+
     def close(self) -> None:
         self.ledger.close()
 
     def _provider_ready(self) -> bool:
         available = getattr(self.provider, "available", None)
         return bool(available()) if callable(available) else True
+
+    def _private_ready(self) -> bool:
+        """Whether private text may be read by the private model: it is on for interpreting, at a safe address."""
+        return self.settings.private_model_ready("interpret")
 
     def log(self, message: str) -> None:
         """Add a line to LOG's history, newest first (300 kept). The Undo block above it is left exactly as it is,
@@ -203,10 +311,14 @@ class Agent:
         allowed = (rel in {s.inbox, s.single_actions, s.someday}
                    or rel.startswith((s.projects_dir + "/", s.areas_dir + "/", s.reviews_dir + "/",
                                       s.agent_dir + "/", s.research_dir + "/")))
+        if rel == str(Path(s.single_actions).parent / "NEXT_ACTIONS.md").replace("\\", "/") and kinds and kinds <= {"create_file", "set_section"}:
+            allowed = True  # generated query sections only; other notes retain their write boundary
         if kinds == {"create_file"} and rel.startswith(s.reference_dir + "/") and not target.exists():
             allowed = True  # a new reference note filed from an Inbox document
         if rel.startswith(s.reference_dir + "/CONTACTS/") and "remove_file" not in kinds:
             allowed = True  # contact notes: the addresses the user confirmed (mail)
+        if rel == f"{s.reference_dir}/TOPIC/TOPIC_INDEX.md" and kinds == {"set_marked_links"}:
+            allowed = True  # only reviewed links inside the marked TOPIC index section
         if "remove_file" in kinds:
             allowed = (kinds == {"remove_file"} and s.inbox_dir != "" and rel != s.inbox
                        and rel.rsplit("/", 1)[0] == s.inbox_dir)
@@ -309,29 +421,31 @@ class Agent:
                     pass
             raise
         changes += added
-        if changes:
+        next_view = str(Path(self.settings.single_actions).parent / "NEXT_ACTIONS.md").replace("\\", "/")
+        if changes and not all(change.get("path") == next_view for change in changes):
+            # Regenerated query views retain backups but must not displace source-task Undo controls.
             self.ledger.add_undo(origin_type, origin_id, summary, changes)
             self.ledger.expire_undo()
         for op in ops:
             if op["op"] == "cancel_task" and (task := parse_task_line(op["match"], op["path"])) is not None:
                 self.note_agent_cancel(task)  # the agent dropped it, so APPROVAL does not ask you why
         if drafts:
-            self._save_drafts(drafts)
+            self._save_drafts(drafts, origin_id)
         return [change.get("path") or change["calendar"] for change in changes]
 
-    def _save_drafts(self, drafts: list[dict[str, Any]]) -> None:
-        """Approved drafts go into Proton Drafts through Bridge. A draft that cannot be saved keeps its text in the
-        approved proposal; nothing is ever sent."""
+    def _save_drafts(self, drafts: list[dict[str, Any]], origin_id: str) -> None:
+        """Approved drafts go into the Outbox and from there into Proton Drafts through Bridge. Bridge closed, a
+        connection that drops or a refusal leaves the draft queued; housekeeping saves it at the next check. The
+        approval never fails over a draft, and nothing is ever sent."""
         if not (self.settings.mail_enabled and self.settings.mail_source == "bridge"):
-            return
+            return  # the text stays in the approved proposal in APPROVAL
+        outbox = Outbox(self)
+        outbox.add(drafts, origin_id)
         try:
-            with Mailbox(self.settings, read_only=True) as box:
-                for op in drafts:
-                    box.save_draft(draft_message(self.settings, op))
-        except MailError as exc:
-            self.log(f"CHECK · a draft did not reach your Proton Drafts ({exc}); its text is in the approved proposal")
-            return
-        self.log(f"Saved {len(drafts)} draft{'s' if len(drafts) != 1 else ''} to your Proton Drafts")
+            outbox.flush()
+        except Exception as exc:  # noqa: BLE001 - the vault change is made; the queued draft is tried again
+            self.health.error("Drafts", exc)
+            self.log(f"A draft is waiting to reach your Proton Drafts ({exc}); it is tried again")
 
     def _advance_watch(self, rel: str, before: str, after: str, ops: list[dict[str, Any]] | None = None) -> None:
         """The agent's own write is not an edit of yours: move the watched note's baseline past it. With edits of
@@ -390,6 +504,11 @@ class Agent:
                 return False
             if kind == "set_section" and section_text(lines, op["section"]) != op["text"].strip():
                 return False
+            if kind == "set_marked_links":
+                if LINKS_BEGIN not in lines or LINKS_END not in lines:
+                    return False
+                if lines[lines.index(LINKS_BEGIN) + 1:lines.index(LINKS_END)] != op["lines"]:
+                    return False
             if kind == "append_log" and f"- {op['entry']}" not in lines:
                 return False
             if kind == "append_bullet" and f"- {op['text']}" not in lines:
@@ -404,40 +523,84 @@ class Agent:
 
     def _interpret_single(self, vault: Vault, text: str, capture: Capture, base: dict[str, Any], *,
                           routing: dict | None, reference: date, history: list[str] | None,
-                          previous: dict | None, cached: dict | None) -> dict[str, Any]:
+                          previous: dict | None, cached: dict | None, private: bool = False) -> dict[str, Any]:
+        """One reading of one capture. A private one goes to the private model or to none, whatever the caller
+        meant: this is the only door to a model for a capture."""
         evidence = "\n".join(dict.fromkeys([capture.text, text, *(history or [])]))
+        private = private or self._is_private_text(vault, evidence)
+        source = quick_update_task(vault, capture.text)
+        if source is not None and SECRET_RE.search(source.raw):
+            return self._manual(base, "Possible secret in the source task; nothing sent", no_model=True)
+        source_project = vault.project_for_path(source.path) if source is not None else None
+        source_context = None
+        if source is not None:
+            source_context = {"title": source.title, "project": source_project.key if source_project else "",
+                              "status": "open" if source.is_open else "done" if source.is_done else "cancelled",
+                              "action_id": source.ref if source.is_open else ""}
+            evidence += "\n" + source.title
+        who = "The private model" if private else "GLM"
+        if private:
+            base = dict(base, private=True)
+            if cached is None and not self._private_ready():
+                return self._manual(base, PRIVATE_BY_HAND, no_model=True)
         try:
-            projects = project_candidates(vault, evidence)
+            projects = project_candidates(vault, evidence, private=private)
             areas = area_candidates(vault)
-            items, lookup = item_candidates(vault, evidence)
+            items, lookup = item_candidates(vault, evidence, private=private)
             if cached is None:
-                examples = self.ledger.learning_examples(evidence)
+                issue = ("User corrected the previous interpretation" if history else
+                         "Private item, read by the private model" if private else
+                         "Jev classification; GLM structured interpretation")
                 value = self.provider.interpret(
-                    text, "Jev classification; GLM structured interpretation" if not history
-                    else "User corrected the previous interpretation",
-                    projects, areas, items, examples, history or None, self._feedback_context(previous or {}),
-                    routing=routing, reference_date=reference, capture_checked=capture.checked)
+                    text, issue, projects, areas, items, [] if private else self.ledger.learning_examples(evidence),
+                    history or None, self._feedback_context(previous or {}), routing=routing, reference_date=reference,
+                    capture_checked=capture.checked, source_context=source_context,
+                    **({"private": True} if private else {}))
             else:
                 value = cached
-            value = dict(validate_interpretation(value, evidence, projects, areas, items,
-                                                 capture_checked=capture.checked))
+            try:
+                value = dict(validate_interpretation(value, evidence, projects, areas, items,
+                                                     capture_checked=capture.checked))
+            except ValueError as exc:
+                if cached is not None or str(exc) != "A resolved capture needs an explanation and a lesson":
+                    raise
+                # One bounded format repair; unchanged grounding and completion checks still apply.
+                value = self.provider.interpret(
+                    text, f"Repair the previous output: {exc}. Return every required field; do not invent missing facts.",
+                    projects, areas, items, [] if private else self.ledger.learning_examples(evidence),
+                    history or None, self._feedback_context(previous or {}), routing=routing, reference_date=reference,
+                    capture_checked=capture.checked, source_context=source_context,
+                    **({"private": True} if private else {}))
+                value = dict(validate_interpretation(value, evidence, projects, areas, items,
+                                                     capture_checked=capture.checked))
         except (ProviderError, ValueError, RuntimeError) as exc:
-            return self._manual(base, f"Interpretation needs attention: {exc}",
+            down = isinstance(exc, PrivateModelDown)  # it did not answer: the agent tries again, you need not
+            how = ("Edit the Inbox line to try again." if private else
+                   "Use Teacher feedback to clarify or retry.")
+            return self._manual(base, f"Interpretation needs attention: {exc}" + (". It is tried again in a few minutes"
+                                                                                 if down else ""), retry=down,
                                 clarification={"original_issue": "Model or validation issue",
-                                               "explanation": "No validated change is available. Use Teacher feedback to clarify or retry.",
+                                               "explanation": f"No validated change is available. {how}",
                                                "assumptions": ""})
         meta = {"interpretation": value, "routing": routing or {}, "reference_date": reference.isoformat()}
         if value["route"] == "needs_clarification":
-            return self._manual(dict(base, **meta), f"GLM needs one detail: {value['question']}",
+            return self._manual(dict(base, **meta), f"{who} needs one detail: {value['question']}",
                                 clarification={"original_issue": "Missing detail", "explanation": value["explanation"],
                                                "assumptions": value["assumptions"]})
         try:
+            if source_project is not None and value["project_key"] and value["project_key"] != source_project.key:
+                raise ValueError("Quick Update must stay with its source project")
             draft, extra_assumptions, matched = draft_from_interpretation(vault, value, reference, lookup)
             capture_tags = {tag.casefold() for tag in TAG_RE.findall(text)}
             draft["explicit_next"] = "#next" in capture_tags
             draft["research"] = "#research" in capture_tags
+            if private:  # wherever the model files it, the item stays private (it may have dropped the link or tag)
+                draft["extra_tags"] = [*draft["extra_tags"], PRIVATE_TAG]
             ops, summary, title = compile_ops(vault, draft, capture=text, reference=reference, marker=new_marker(),
                                               matched_task=matched)
+            if source_project is not None:
+                ops.append({"op": "append_log", "path": source_project.rel,
+                            "entry": f"{reference.isoformat()} {capture.text}"})
         except (ValueError, RuntimeError) as exc:
             return self._manual(dict(base, **meta), f"Interpretation needs attention: {exc}",
                                 clarification={"original_issue": "Validation issue", "explanation": value["explanation"],
@@ -447,7 +610,8 @@ class Agent:
                      "update_report" if route == "project_note" else "new_capture")
         category = "project" if route == "new_project" else "unclear" if operation != "new_capture" else route
         proposal = dict(base, **meta, kind=route, title=title, summary=summary, ops=ops,
-                        reason="GLM interpretation; approval required",
+                        reason="Private model interpretation; approval required" if private
+                        else "GLM interpretation; approval required",
                         clarification={"original_issue": "Jev classification; GLM structured interpretation",
                                        "explanation": value["explanation"],
                                        "assumptions": (value["assumptions"] + " " + extra_assumptions).strip(),
@@ -458,6 +622,8 @@ class Agent:
             proposal["teacher_history"] = history
             proposal["learning"]["teacher_feedback"] = history
             proposal["learning"]["corrected_title"] = title
+        if private:
+            proposal.pop("learning")  # a lesson from a private item would reach a remote model as an example
         return proposal
 
     @staticmethod
@@ -468,6 +634,11 @@ class Agent:
     def _is_private_text(vault: Vault, text: str) -> bool:
         tags = {tag.casefold() for tag in TAG_RE.findall(text)}
         links = [link.target for link in iter_links(text)]
+        source = quick_update_task(vault, text)
+        if source is not None:
+            note = vault.notes.get(source.path)
+            if vault.is_private_task(source) or (note and str(note.frontmatter.get("private", "")).casefold() == "true"):
+                return True
         return "#private" in tags or any(
             (link in vault.projects and vault.is_private_project(vault.projects[link]))
             or (link in vault.areas and vault.areas[link].private) for link in links)
@@ -500,7 +671,7 @@ class Agent:
         base = dict(base, explicit=True, private=private, decided=True)
         if len(set(keys)) != 1:
             return self._manual(base, "A decision needs exactly one project link, such as "
-                                      "'Decided: Jordan is our advisor [[DEMO_PROJECT]]'.", no_model=True)
+                                      "'Decided: SampleAdvisor is our advisor [[DEMO_PROJECT]]'.", no_model=True)
         return self.decision_proposal(vault, vault.projects[keys[0]], body, base, reference, private, cached=cached,
                                       capture=text)
 
@@ -522,9 +693,10 @@ class Agent:
         elif not self.settings.remote_inference or not self._provider_ready():
             note = "Remote inference is off, so the questions were not matched. Tick the ones this answers."
         else:
-            try:
-                answer = self.provider.decided(body, project.key, [{"id": q["id"], "text": q["text"]} for q in questions],
-                                               sections, reference)
+            try:  # a question that is private stays out of what the model reads
+                asked = [{"id": q["id"], "text": q["text"]} for q in questions
+                         if not self._is_private_text(vault, q["text"])]
+                answer = self.provider.decided(body, project.key, asked, sections, reference)
             except (ProviderError, ValueError, RuntimeError) as exc:
                 note = f"GLM could not match questions ({exc}). Tick the ones this answers."
         clean = None
@@ -591,19 +763,23 @@ class Agent:
         base["engine_version"] = PROPOSAL_VERSION
         reference = date.fromisoformat(old.get("reference_date", self.today().isoformat()))
         text = old.get("source", capture.text)
+        private = bool(old.get("private"))
         decided = DECIDED_RE.match(text)
         if old.get("decided") and decided:
-            return self._decided_proposal(vault, text, decided.group(1), base, reference, bool(old.get("private")),
+            return self._decided_proposal(vault, text, decided.group(1), base, reference, private,
                                           cached=old.get("decided_answer"))
         if old.get("explicit"):
-            rebuilt = self._structured_proposal(vault, text, base, reference, bool(old.get("private")))
+            rebuilt = self._structured_proposal(vault, text, base, reference, private)
             if rebuilt is not None:
                 return rebuilt
         cached = old.get("interpretation") if old.get("kind") != "manual" else None
-        if cached is None and (not self.settings.remote_inference or not self._provider_ready()):
-            return self._manual(base, "The earlier proposal went stale and cannot be rebuilt without the model")
+        ready = self._private_ready() if private else self.settings.remote_inference and self._provider_ready()
+        if cached is None and not ready:
+            return self._manual(dict(base, private=True) if private else base,
+                                "The earlier proposal went stale and cannot be rebuilt without the model")
         proposal = self._interpret_single(vault, text, capture, base, routing=old.get("routing"), reference=reference,
-                                          history=old.get("teacher_history"), previous=old, cached=cached)
+                                          history=old.get("teacher_history"), previous=old, cached=cached,
+                                          private=private)
         if old.get("teacher_history"):
             proposal["teacher_history"] = old["teacher_history"]
         return proposal
@@ -623,7 +799,8 @@ class Agent:
         reference = date.fromisoformat(previous.get("reference_date", self.today().isoformat()))
         base = {"source": capture.text, "reference_date": reference.isoformat(), "engine_version": PROPOSAL_VERSION}
         text = capture.text
-        if SECRET_RE.search(text):
+        source = quick_update_task(vault, text)
+        if SECRET_RE.search(text) or (source is not None and SECRET_RE.search(source.raw)):
             return [(capture.capture_id, self._manual(dict(base, source="[redacted]"),
                                                       "Possible secret in the capture; nothing was sent anywhere",
                                                       no_model=True))]
@@ -638,11 +815,10 @@ class Agent:
             return [(capture.capture_id, self._manual(
                 base, "Research never runs on private items. Remove #research, or the private tag or link.",
                 no_model=True))]
-        if private:
-            return [(capture.capture_id, self._manual(
-                base, "Private capture. Write it in vault syntax so it can be filed without a model: "
-                      "add one context tag (#computer, #calls, #anywhere, #errands), or use "
-                      "#waiting Person: what, or #someday.", no_model=True))]
+        if private:  # the private model reads it when it is on; otherwise it waits for you to write it in vault syntax
+            return [(capture.capture_id, self._interpret_single(
+                vault, text, capture, base, routing=None, reference=reference, history=None, previous=previous,
+                cached=None, private=True))]
         if not self.settings.remote_inference:
             return [(capture.capture_id, self._manual(
                 base, "Remote inference is off. Add a context tag or #waiting Person: what to file it without a model.",
@@ -678,6 +854,23 @@ class Agent:
         """Captures from outside the vault (Telegram, mail the user writes to himself), one Inbox line each."""
         snapshot = stable_snapshot(self.settings.vault_path(self.settings.inbox))
         self._write_inbox(snapshot, append_capture_lines(snapshot, lines))
+
+    @single_writer
+    def append_relay_to_inbox(self, update_id: int, lines: list[str]) -> bool:
+        """Keep a hidden receipt with the lines until the ledger records the update ID."""
+        marker = f"<!-- gtd-agent:telegram-relay={update_id} -->\n"
+        snapshot = stable_snapshot(self.settings.vault_path(self.settings.inbox))
+        if marker in snapshot.text:
+            return False
+        self._write_inbox(snapshot, append_capture_lines(snapshot, lines) + marker)
+        return True
+
+    @single_writer
+    def clear_relay_receipt(self, update_id: int) -> None:
+        marker = f"<!-- gtd-agent:telegram-relay={update_id} -->\n"
+        snapshot = stable_snapshot(self.settings.vault_path(self.settings.inbox))
+        if marker in snapshot.text:
+            self._write_inbox(snapshot, snapshot.text.replace(marker, "", 1))
 
     def _inbox_edited(self, path: Path) -> float:
         """When the user last changed the Inbox. The agent's own writes to it are not his edits."""
@@ -743,10 +936,7 @@ class Agent:
                 same = bool(members) and all(row["source_hash"] == capture.source_sha256 for row in members)
                 current = all(json.loads(row["proposal_json"]).get("engine_version") == PROPOSAL_VERSION
                               for row in members)
-                retry = (len(members) == 1 and members[0]["status"] == "pending"
-                         and json.loads(members[0]["proposal_json"]).get("retry")
-                         and datetime.fromisoformat(members[0]["updated_at"]) < datetime.now() - timedelta(minutes=10)
-                         and self.settings.remote_inference and self._provider_ready())
+                retry = self._retry_due(members)
                 if same and current and len(members) == len(group) and not retry:
                     stale = [row for row in members if row["status"] == "stale"]
                     if not stale:
@@ -763,6 +953,7 @@ class Agent:
                         proposal = self._rebuild(vault, capture, row)
                         proposal["group"] = group
                         proposal["line_number"] = capture.line_number
+                        self.note_conflicts(proposal)
                         proposal_id = self.ledger.upsert("inbox", row["dedupe_key"], proposal,
                                                          capture_id=capture.capture_id,
                                                          source_hash=capture.source_sha256)
@@ -793,6 +984,7 @@ class Agent:
                     carried = self._draft_feedback(prior["id"])
                     if carried:
                         proposal["carried_feedback"] = carried
+                self.note_conflicts(proposal)
                 if self.settings.mode == "approval":
                     proposal_id = self.ledger.upsert("inbox", dedupe_key, proposal, capture_id=capture.capture_id,
                                                      source_hash=capture.source_sha256)
@@ -802,6 +994,18 @@ class Agent:
             for row in rows:
                 if row["dedupe_key"] not in keys and row["status"] == "pending":
                     self.ledger.set_status(row["id"], "stale")
+
+    def _retry_due(self, members: list[Any]) -> bool:
+        """A proposal that waits only for a model to answer is made again ten minutes after it was tried, once the
+        model it needs can be used."""
+        if len(members) != 1 or members[0]["status"] != "pending":
+            return False
+        old = json.loads(members[0]["proposal_json"])
+        if not old.get("retry") or datetime.fromisoformat(members[0]["updated_at"]) >= datetime.now() - timedelta(minutes=10):
+            return False
+        if old.get("private"):
+            return self._private_ready()
+        return self.settings.remote_inference and self._provider_ready()
 
     def _clear_capture(self, capture_id: str, source_hash: str, source_text: str) -> None:
         rows = self.ledger.for_capture(capture_id)
@@ -828,6 +1032,12 @@ class Agent:
         proposal = json.loads(row["proposal_json"])
         if proposal.get("engine_version") != PROPOSAL_VERSION:
             raise ApprovalError("Proposal predates this agent version; rescan for a fresh preview")
+        if proposal["kind"] == "reference_links":
+            from .reference_links import ReferenceLinker
+            eligible = ReferenceLinker(self)._eligible(self.vault())
+            if eligible is None or [note.rel for note in eligible[1]] != proposal.get("source_paths"):
+                self.ledger.set_status(proposal_id, "stale")
+                raise ApprovalError("The TOPIC folder changed; review the next fresh proposal")
         if proposal["kind"] == "manual" or not proposal.get("ops"):
             raise ApprovalError("Nothing to apply. Write a correction and check Teacher feedback")
         if row["origin"] == "inbox":
@@ -838,9 +1048,12 @@ class Agent:
                 self.ledger.set_status(proposal_id, "stale")
                 raise ApprovalError("The Inbox line changed; the next scan makes a fresh proposal")
         label = ROUTE_LABEL.get(proposal["kind"], proposal["kind"].replace("_", " ").capitalize())
+        edited = False  # you changed it first: the trust report counts such an approval apart
         if proposal.get("items"):
+            shown = [n for n, item in enumerate(proposal["items"], 1) if item.get("checked", True)]
             if selected is None:
-                selected = [n for n, item in enumerate(proposal["items"], 1) if item.get("checked", True)]
+                selected = shown
+            edited = edited or sorted(set(selected)) != shown
             chosen = [item for number, item in enumerate(proposal["items"], 1) if number in set(selected)]
             proposal["ops"] = [*proposal.get("base_ops", []), *(op for item in chosen for op in item["ops"])]
             proposal["summary"] = (proposal.get("summary", "") +
@@ -851,7 +1064,11 @@ class Agent:
             if choice and start_lead is not None and start_lead in choice["options"]:
                 start = date.fromisoformat(choice["due"]) - timedelta(days=start_lead)
                 op["line"] = with_date(op["line"], "start", start)
+                edited = edited or start_lead != choice["default"]
                 self.ledger.update_json(proposal_id, proposal)
+        if edited:
+            proposal["edited"] = True
+            self.ledger.update_json(proposal_id, proposal)
         self.ledger.set_status(proposal_id, "applying")
         try:
             written = self.apply_ops(proposal["ops"], "proposal", proposal_id,
@@ -863,6 +1080,8 @@ class Agent:
             self.ledger.set_status(proposal_id, "pending")  # e.g. a sync lock; the next poll retries
             raise ApprovalError(f"Not applied yet: {exc}") from exc
         self.ledger.set_status(proposal_id, "committed")
+        if proposal["kind"] == "reference_links" and proposal.get("project"):
+            self.ledger.kv_set("reference_project|TOPIC", proposal["project"])
         self.ledger.event("gtd.proposal_committed", {"id": proposal_id, "origin": row["origin"],
                                                      "kind": proposal["kind"], "paths": written})
         verb = "Auto · trusted" if proposal.get("trusted") else "Approved ·"
@@ -881,7 +1100,7 @@ class Agent:
     @single_writer
     def apply_trusted(self) -> list[str]:
         """Proposal kinds you moved to bookkeeping ([trust] bookkeeping) apply at once, logged and undoable. A
-        trusted apply is not your confirmation, so it saves no learned example."""
+        trusted apply is not your confirmation, so it saves no learned example. What the private model read waits."""
         if not self.settings.trust_bookkeeping or self.settings.mode != "approval":
             return []
         outcomes = []
@@ -889,6 +1108,8 @@ class Agent:
             proposal = json.loads(row["proposal_json"])
             if proposal.get("kind") not in self.settings.trust_bookkeeping or not proposal.get("ops"):
                 continue
+            if proposal.get("private") and not proposal.get("explicit"):
+                continue  # the private model has no track record: its reading of an item waits for your tick
             proposal.pop("learning", None)
             proposal["trusted"] = True
             self.ledger.update_json(row["id"], proposal)
@@ -897,6 +1118,49 @@ class Agent:
             except (ApprovalError, OSError, ValueError, RuntimeError) as exc:
                 outcomes.append(f"{row['id']}: {exc}")
         return outcomes
+
+    @single_writer
+    def save_reference_project(self, proposal_id: str, answer: str, render: bool = True) -> str:
+        """Use an entered existing project key to build reviewed TOPIC index links."""
+        from .reference_links import ReferenceLinker
+        row = self.ledger.get(proposal_id)
+        if row is None or row["status"] != "pending":
+            raise ApprovalError("This TOPIC question is no longer open")
+        proposal = json.loads(row["proposal_json"])
+        if proposal.get("kind") != "reference_match":
+            raise ApprovalError("This proposal does not ask for a project")
+        vault = self.vault()
+        key = answer.strip().strip("[] ").upper()
+        project = vault.projects.get(key)
+        if project is None or project.archived or vault.is_private_project(project):
+            raise ApprovalError("Enter an existing public project key")
+        linker = ReferenceLinker(self)
+        eligible = linker._eligible(vault)
+        if eligible is None or [note.rel for note in eligible[1]] != proposal.get("source_paths"):
+            self.ledger.set_status(proposal_id, "stale")
+            raise ApprovalError("The TOPIC folder changed; review a fresh proposal")
+        index, notes = eligible
+        old = linker._marked(vault.notes[index].text)
+        if old is None:
+            raise ApprovalError("The TOPIC index link markers need repair")
+        desired = linker._desired(vault, index, notes)
+        ops = []
+        if old != desired:
+            ops.append({"op": "set_marked_links", "path": index, "old": old, "lines": desired})
+        if "[[TOPIC_INDEX]]" not in vault.notes[project.rel].text:
+            ops.append({"op": "append_bullet", "path": project.rel, "section": "Links", "text": "[[TOPIC_INDEX]]"})
+        if not ops:
+            self.ledger.kv_set("reference_project|TOPIC", key)
+            self.ledger.set_status(proposal_id, "committed")
+            if render:
+                self.render_reviews()
+            return f"TOPIC already links to {key}"
+        proposal.update(kind="reference_links", project=key, ops=ops,
+                        summary=f"[[{key}]] → [[TOPIC_INDEX]] → {len(notes)} TOPIC notes")
+        self.ledger.update_json(proposal_id, proposal)
+        if render:
+            self.render_reviews()
+        return f"TOPIC project selected: {key}. Review the links, then Approve"
 
     def answer(self, proposal_id: str, label: str, render: bool = True) -> str:
         """Apply the answer you ticked on a vault choice. Leave it stops asking until the problem changes."""
@@ -1108,7 +1372,7 @@ class Agent:
             body = chunks[index + 2].split(ITEM_END, 1)[0].strip()
             try:
                 _, now_feedback = split_feedback(body)
-                return (now_feedback == feedback and _selected_choice(body) == "Teacher feedback"
+                return (now_feedback == feedback and _selected_choice(body) in {"Teacher feedback", "Answer question"}
                         and _normalized_block(body) == _normalized_block(canonical))
             except ValueError:
                 return False
@@ -1126,8 +1390,10 @@ class Agent:
         if not feedback.strip() or len(feedback) > 4000:
             raise ApprovalError("Write a correction of 1 to 4000 characters")
         old = json.loads(row["proposal_json"])
-        if old.get("explicit") or old.get("private"):
+        if old.get("explicit"):
             raise ApprovalError("This capture was filed from vault syntax; edit the Inbox line instead")
+        if old.get("private"):
+            raise ApprovalError("Private items take no Teacher feedback; edit the Inbox line instead")
         inbox = stable_snapshot(self.settings.vault_path(self.settings.inbox))
         capture = next((c for c in parse_captures(inbox, self.settings.max_capture_chars)
                         if c.capture_id == row["capture_id"]), None)
@@ -1155,6 +1421,7 @@ class Agent:
                                                  routing=old.get("routing"), reference=reference, history=history,
                                                  previous=old, cached=None)
                 revised["teacher_history"] = history
+                revised["first_kind"] = old.get("first_kind", old["kind"])  # the trust report charges the edit to it
                 if old.get("group"):
                     revised["group"] = old["group"]
                 self.ledger.finish_feedback(request_id, "ready", "Correction processed; revised preview below.", revised)
@@ -1171,32 +1438,75 @@ class Agent:
         return f"{proposal_id}: revised proposal {revised_id} is ready. Approve it to apply the change and save the lesson."
 
     # ------------------------------------------------------------ APPROVAL.md
+    def save_follow_up_dates(self, proposal_id: str, shown: dict[str, str]) -> str:
+        """Save reviewed waiting dates in the pending proposal, before any vault write."""
+        row = self.ledger.get(proposal_id)
+        if row is None or row["status"] != "pending":
+            raise ApprovalError("Proposal is missing or no longer pending")
+        proposal = json.loads(row["proposal_json"])
+        fields = _waiting_fields(proposal)
+        if not fields or set(shown) != {label for label, _, _ in fields}:
+            raise ApprovalError("Follow-up fields changed; review the fresh proposal")
+        changes = []
+        for label, op, old in fields:
+            value = shown[label]
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+                raise ApprovalError("Enter the follow-up date as YYYY-MM-DD")
+            try:
+                chosen = date.fromisoformat(value)
+            except ValueError as exc:
+                raise ApprovalError("Enter a valid follow-up date") from exc
+            task = parse_task_line(op["line"])
+            if task is None or task.created is None or chosen < task.created:
+                raise ApprovalError("The follow-up date must be on or after the waiting-since date")
+            changes.append((op, old, chosen))
+        for op, _, chosen in changes:
+            op["line"] = with_date(op["line"], "due", chosen)
+        if proposal.get("items"):
+            proposal["ops"] = [*proposal.get("base_ops", []),
+                               *(op for item in proposal["items"] for op in item["ops"])]
+        if any(old != chosen for _, old, chosen in changes):
+            proposal["edited"] = True
+        self.ledger.update_json(proposal_id, proposal)
+        return f"Saved follow-up date for {proposal_id}; review the changed preview, then Approve"
+
     def _proposal_block(self, row: Any) -> str:
         proposal = json.loads(row["proposal_json"])
         kind = proposal["kind"]
         today = self.today()
         heading = _review_text(proposal.get("title") or proposal.get("source") or kind)
         label = ROUTE_LABEL.get(kind, kind)
-        lines = [f"### {label} · {heading}", f"ID: `{row['id']}` ^p-{row['id']}"]
+        is_question = kind == "reference_match" or (kind == "manual" and not proposal.get("ops")
+                                                      and "needs one detail:" in proposal.get("reason", ""))
+        title = label if is_question else f"{label} · {heading[:72]}" + ("…" if len(heading) > 72 else "")
+        lines = [f"### {title} ^p-{row['id']}"]
+        if kind == "birthday_import" and proposal.get("flagged"):
+            lines.append("Needs date review: " + "; ".join(_review_text(value) for value in proposal["flagged"]))
+        if kind == "birthday_import":
+            lines.append("Change: Annual message tasks in [[SINGLE_ACTIONS]] › Birthdays.")
+        details = [f"ID: `{row['id']}`"]
         if proposal.get("source"):
-            lines.append(f"Source: {_review_text(proposal['source'])}")
+            details.append(f"Source: {_review_text(proposal['source'])}")
         if proposal.get("item"):
             item = proposal["item"]
-            lines.append(f"Part {item['index']} of {item['count']} from: {_review_text(proposal.get('parent_source', ''))}")
+            details.append(f"Part {item['index']} of {item['count']} from: {_review_text(proposal.get('parent_source', ''))}")
         if proposal.get("summary"):
-            lines.append(f"Where: {_review_text(proposal['summary'])}")
-        lines.append(f"Why: {_review_text(proposal.get('reason', 'Review required'))}")
+            details.append(f"Where: {_review_text(proposal['summary'])}")
+        details += [_review_text(note) for note in proposal.get("conflicts") or []]
+        reason = f"Why: {_review_text(proposal.get('reason', 'Review required'))}"
+        (lines if is_question or kind == "manual" else details).append(reason)
         clarification = proposal.get("clarification")
         if clarification:
-            lines.append(f"Interpretation: {_review_text(clarification.get('explanation', ''))}")
-            lines.append(f"Assumptions: {_review_text(clarification.get('assumptions') or 'None stated')}")
+            details.append(f"Interpretation: {_review_text(clarification.get('explanation', ''))}")
+            details.append(f"Assumptions: {_review_text(clarification.get('assumptions') or 'None stated')}")
             if proposal.get("learning"):
-                lines.append(f"Lesson saved on approval: {_review_text(clarification.get('lesson', ''))}")
+                details.append(f"Lesson saved on approval: {_review_text(clarification.get('lesson', ''))}")
         for number, feedback in enumerate(proposal.get("teacher_history", []), 1):
-            lines.append(f"Teacher correction {number}: {_review_text(feedback)}")
+            details.append(f"Teacher correction {number}: {_review_text(feedback)}")
         request = self.ledger.latest_feedback(row["id"])
         if request:
             lines.append(f"Feedback status: {_review_text(request['message'])}")
+        lines += ["<details><summary>Details</summary>", f"<pre>{html.escape(chr(10).join(details))}</pre>", "</details>"]
         ops = proposal.get("ops", [])
         items = proposal.get("items") or []
         if items:
@@ -1204,6 +1514,10 @@ class Agent:
                       *[f"- [{'x' if item.get('checked', True) else ' '}] {number}. {_review_text(item['label'])}"
               for number, item in enumerate(items, 1)]]
             ops = proposal.get("base_ops", ops)
+        waiting = _waiting_fields(proposal)
+        if waiting:
+            lines += ["", "Edit the date, then tick Save follow-up date. Review the updated change before approval.",
+                      *[f"{label} {follow.isoformat()}" for label, _, follow in waiting]]
         for draft in proposal.get("drafts") or []:
             lines += ["", f"Draft · {_review_text(draft['title'])} · To: {_review_text(draft.get('to') or 'add the address')}"
                           f" · Subject: {_review_text(draft['subject'])}", "```text", *shown_draft(draft["body"]), "```",
@@ -1234,6 +1548,8 @@ class Agent:
                 source = proposal.get("parent_source") or proposal.get("source", "")
                 preview += f"\n\nInbox line cleared after approval: {source}"
             lines += ["Change:", f"<pre>{html.escape(preview)}</pre>"]
+        elif kind == "reference_match":
+            lines.append("Enter an existing public project key. Review the proposed links after saving it.")
         elif not items:  # with items, the boxes above are the change
             lines.append("Change: none yet. Correct the interpretation below, or edit the Inbox line.")
         controls = self._controls(row["origin"], proposal)
@@ -1242,8 +1558,9 @@ class Agent:
                           "the Approve line you want."]
         lines += ["", DECISION, *[f"- [ ] {label}" for label in controls]]
         body = "\n".join(lines)
-        if "Teacher feedback" in controls:
-            return with_feedback(body, proposal.get("carried_feedback", ""))
+        if "Teacher feedback" in controls or "Answer question" in controls or "Save project" in controls:
+            return with_feedback(body, proposal.get("carried_feedback", ""),
+                                 heading=ANSWER_HEADING if is_question else None)
         if kind == "drop_reason":
             return with_feedback(body, "", heading=REASON_HEADING)
         if kind == "after_event":
@@ -1251,6 +1568,9 @@ class Agent:
         return body
 
     def _controls(self, origin: str, proposal: dict[str, Any]) -> list[str]:
+        date_control = ["Save follow-up date"] if _waiting_fields(proposal) else []
+        if proposal.get("kind") == "reference_match":
+            return ["Save project", "Set aside"]
         if proposal.get("choices"):
             return [choice["label"] for choice in proposal["choices"]] + ["Leave it"]
         if proposal.get("kind") == "drop_reason":
@@ -1258,14 +1578,15 @@ class Agent:
         if proposal.get("kind") == "after_event":
             return ["Save", "Skip"]
         if origin != "inbox":
-            return (["Approve"] if proposal.get("ops") else []) + ["Reject", "Set aside"]
-        teachable = not proposal.get("explicit") and not proposal.get("no_model")
+            return (["Approve"] if proposal.get("ops") else []) + date_control + ["Reject", "Set aside"]
+        teachable = not proposal.get("explicit") and not proposal.get("no_model") and not proposal.get("private")
         start = _start_choice(proposal)
         controls = [] if not proposal.get("ops") else \
             [start_control(days, start["default"]) for days in start["options"]] if start else ["Approve"]
-        controls.append("Reject")
+        controls = controls + date_control + ["Reject"]
         if teachable:
-            controls.append("Teacher feedback")
+            controls.append("Answer question" if proposal.get("kind") == "manual" and not proposal.get("ops")
+                            and "needs one detail:" in proposal.get("reason", "") else "Teacher feedback")
         return controls
 
     def _undo_block(self, record: Any) -> str:
@@ -1304,7 +1625,8 @@ class Agent:
         for row in rows:
             group = ("inbox" if row["origin"] in {"inbox", "document"} else
                      "mail" if row["origin"] in {"mail", "contact"} else
-                     row["origin"] if row["origin"] in {"drop", "event", "lint", "state"} else "housekeeping")
+                     row["origin"] if row["origin"] in {"drop", "event", "lint", "state", "birthday"}
+                     else "housekeeping")
             blocks[("proposal", row["id"])] = (group, self._proposal_block(row))
         for record in self.ledger.list_undo(limit=UNDO_SHOWN):
             blocks[("undo", record["id"])] = ("undo", self._undo_block(record))
@@ -1321,8 +1643,11 @@ class Agent:
 
     @staticmethod
     def _managed(intro: str, sections: list[tuple[str, list[tuple[tuple[str, str], str]]]],
-                 prior: dict[tuple[str, str], str], attention: list[str]) -> str:
-        out = [REVIEW_BEGIN, "", intro, ""]
+                 prior: dict[tuple[str, str], str], attention: list[str],
+                 reset_review_ids: set[str] | None = None) -> str:
+        out = [REVIEW_BEGIN, ""]
+        if intro:
+            out += [intro, ""]
         for title, items in sections:
             out += [title, ""]
             if not items:
@@ -1330,7 +1655,7 @@ class Agent:
             for (kind, entry_id), body in items:
                 shown = body
                 existing = prior.get((kind, entry_id))
-                if existing is not None:
+                if existing is not None and entry_id not in (reset_review_ids or set()):
                     try:
                         if _normalized_block(existing) == _normalized_block(body):
                             shown = existing  # keeps a tick the agent has not read yet
@@ -1342,17 +1667,21 @@ class Agent:
                 out += [f"<!-- gtd-agent:{kind} id={entry_id} -->", shown, ITEM_END, ""]
         return "\n".join([*out, *attention, REVIEW_END])
 
-    def render_reviews(self) -> None:
+    def render_reviews(self, reset_review_ids: set[str] | None = None) -> None:
         """APPROVAL: decisions waiting for you. LOG: applied changes with Undo boxes, above the history."""
         expected = self._expected_blocks()
         path = self.settings.vault_path(self.settings.review)
         current = read_snapshot(path) if path.exists() else None
-        text = current.text if current else "# APPROVAL\n\nThe GTD agent's proposals. Rules: [[VAULT_RULES]].\n"
+        text = current.text if current else "# APPROVAL\n"
+        if text.startswith(LEGACY_APPROVAL_HEADER):
+            text = "# APPROVAL\n" + text[len(LEGACY_APPROVAL_HEADER):]
         sections = [(title, [(key, body) for key, (group, body) in expected.items() if group == name])
-                    for name, title in (("inbox", "## Inbox"), ("mail", "## Mail"), ("drop", "## Why did you drop these?"),
+                    for name, title in (("inbox", "## Inbox"), ("mail", "## Mail"),
+                                        ("birthday", "## Birthdays"), ("drop", "## Why did you drop these?"),
                                         ("event", "## What came out of it?"),
                                         ("lint", "## Vault choices"), ("state", "## Current state handovers"),
-                                        ("housekeeping", "## Housekeeping"))]
+                                        ("housekeeping", "## Housekeeping"))
+                    if name != "birthday" or any(group == "birthday" for group, _ in expected.values())]
         attention: list[str] = []
         applying = self.ledger.list("applying")
         if applying:
@@ -1360,7 +1689,8 @@ class Agent:
                           "A write was interrupted. Run `reconcile` (it checks whether the change landed).", ""]
             attention += [f"- `{row['id']}` · {_review_text(json.loads(row['proposal_json']).get('summary', ''))}"
                           for row in applying] + [""]
-        managed = self._managed(APPROVAL_INTRO, sections, self._prior_blocks(text), attention)
+        managed = self._managed(APPROVAL_INTRO, sections, self._prior_blocks(text), attention,
+                                reset_review_ids)
         if REVIEW_BEGIN in text and REVIEW_END in text:
             start = text.index(REVIEW_BEGIN)
             end = text.index(REVIEW_END, start) + len(REVIEW_END)
@@ -1409,6 +1739,7 @@ class Agent:
             return []
         expected = self._expected_blocks()
         outcomes: list[str] = []
+        reset_review_ids: set[str] = set()
         for kind, entry_id, remainder in chunks:
             if ITEM_END not in remainder:
                 continue
@@ -1430,6 +1761,15 @@ class Agent:
                     continue
                 row = self.ledger.get(entry_id)
                 stored = json.loads(row["proposal_json"]) if row is not None else {}
+                if choice == "Save follow-up date":
+                    outcomes.append(self.save_follow_up_dates(entry_id, _shown_follow_up_dates(body)))
+                    reset_review_ids.add(entry_id)
+                    continue
+                if (choice == "Approve" or choice.startswith("Approve · show ")) and _waiting_fields(stored):
+                    current_dates = {label: follow.isoformat() for label, _, follow in _waiting_fields(stored)}
+                    if _shown_follow_up_dates(body) != current_dates:
+                        outcomes.append(f"{entry_id}: Save follow-up date before Approve")
+                        continue
                 if stored.get("choices"):
                     outcomes.append(self.answer(entry_id, choice, render=False))
                 elif choice == "Approve" or choice.startswith("Approve · show "):
@@ -1448,13 +1788,16 @@ class Agent:
                 elif choice == "Save":
                     _, answer = split_feedback(body)
                     outcomes.append(self.save_event_outcome(entry_id, answer, render=False))
+                elif choice == "Save project":
+                    _, answer = split_feedback(body)
+                    outcomes.append(self.save_reference_project(entry_id, answer, render=False))
                 elif choice == "Skip":
                     self.reject(entry_id, render=False, status="skipped")
                     outcomes.append(f"Skipped {entry_id}")
-                elif choice == "Teacher feedback":
+                elif choice in {"Teacher feedback", "Answer question"}:
                     _, feedback = split_feedback(body)
                     if not feedback:
-                        outcomes.append(f"{entry_id}: write Your correction before checking Teacher feedback")
+                        outcomes.append(f"{entry_id}: write an answer before checking {choice}")
                     else:
                         outcome = self.submit_teacher_feedback(entry_id, feedback, canonical[1])
                         if outcome:
@@ -1462,5 +1805,5 @@ class Agent:
             except (OSError, ValueError, RuntimeError) as exc:
                 outcomes.append(f"{entry_id}: {exc}")
         if outcomes:
-            self.render_reviews()
+            self.render_reviews(reset_review_ids)
         return outcomes

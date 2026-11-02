@@ -143,7 +143,7 @@ def loop_operations(agent: Any) -> list[Operation]:
     """The agent's work, in loop order: approvals and Telegram every poll; Inbox and upkeep every scan. A scan
     that finds the user still typing in the Inbox comes back for it as soon as the Inbox is quiet."""
     from .housekeeping import Housekeeper
-    from .telegram import TelegramCapture
+    from .telegram import RelayCapture, TelegramCapture
 
     settings = agent.settings
     housekeeper = Housekeeper(agent)
@@ -151,8 +151,9 @@ def loop_operations(agent: Any) -> list[Operation]:
     if settings.mode == "approval":
         operations.append(Operation("Approvals", agent.sync_review_requests, "poll"))
     if settings.telegram_enabled:
-        telegram = TelegramCapture(agent)
-        operations.append(Operation("Telegram", telegram.poll, "poll",
+        telegram = RelayCapture(agent) if settings.telegram_capture == "relay" else TelegramCapture(agent)
+        label = "Telegram relay" if settings.telegram_capture == "relay" else "Telegram"
+        operations.append(Operation(label, telegram.poll, "poll",
                                     wakes_scan=lambda messages: any(m.startswith("Telegram: captured")
                                                                     for m in messages)))
     operations.append(Operation("Inbox scan", lambda: scan_inbox(agent), "scan",

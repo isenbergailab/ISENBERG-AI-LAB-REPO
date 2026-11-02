@@ -1,0 +1,6 @@
+{
+  "eligible": false,
+  "source_id": "ambiguous-page-1",
+  "source_type": "image",
+  "rejection_reason": "The image contains several inseparable dictionary entries."
+}

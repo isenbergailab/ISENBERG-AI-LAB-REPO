@@ -92,11 +92,11 @@ class TodayCalendarTests(CalendarStatusCase):
                 + event("tour", "Lab tour", "20260928T150000", "20260928T160000") * 2     # listed twice
                 + "END:VCALENDAR\r\n")
 
-    def test_today_shows_each_event_once_with_its_real_span(self):
+    def test_today_omits_calendar_events_but_keeps_planning(self):
         Housekeeper(self.agent).digest(self.agent.vault(), now=NOW)
-        line = next(l for l in self.read("_agent/TODAY.md").splitlines() if l.startswith("- Calendar:"))
-        self.assertEqual(line, "- Calendar: until 09:00 Retreat · 09:00 until Tue 17:00 Conference · "
-                               "15:00–16:00 Lab tour")
+        today = self.read("_agent/TODAY.md")
+        self.assertNotIn("- Calendar:", today)
+        self.assertNotIn("- Calendar:", today)
 
 
 class NextEventTests(CalendarStatusCase):
@@ -136,6 +136,15 @@ class AfterEventTests(CalendarStatusCase):
                           "turn comes)"])
         self.keep(datetime(2026, 9, 28, 10, 0))
         self.assertEqual(len([name for name, _ in self.provider.calls if name == "after_event"]), 1)
+
+    def test_a_private_step_is_not_listed_for_the_model(self):
+        self.write(LAB, self.read(LAB).replace("- [ ] Book the room #calls", "- [ ] Book the room #calls #private"))
+        self.keep()
+        row = next(r for r in self.pending_kind("after_event") if "Demo Project" in r["proposal_json"])
+        self.answer(row["id"], "Advisor agreed to sponsor")
+        self.keep(datetime(2026, 9, 28, 9, 30))
+        call = next(c for name, c in self.provider.calls if name == "after_event")
+        self.assertEqual(call["steps"], ["Email the advisor", "Plan first meeting"])
 
     def test_a_private_project_gets_its_log_line_and_no_model(self):
         self.keep()

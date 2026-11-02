@@ -8,19 +8,24 @@ import subprocess
 import sys
 import time
 import traceback
+import urllib.parse
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from . import mail, mailbox, pdf, radicale
 from .budget import Budget
+from .birthdays import BirthdayImporter
 from .core import MODEL_JOBS, Settings, is_openrouter, parse_captures, process_lock, read_snapshot
 from .ledger import Ledger
 from .credentials import NAMES, has_secret, secret_names, set_secret
+from .drafts import Outbox, draft_ops
 from .export import export_project, find_project, notes_for
 from .housekeeping import Housekeeper
-from .providers import OpenRouter, ProviderError
+from .planner import Planner
+from .providers import OpenRouter, ProviderError, knock
 from .runner import Control, Runner, loop_operations
-from .telegram import TelegramCapture, TelegramError
+from .telegram import RelayCapture, TelegramCapture, TelegramError
+from .trust import TrustReport
 from .vault import Vault
 from .workflow import Agent, ApprovalError
 
@@ -41,6 +46,7 @@ def _parser() -> argparse.ArgumentParser:
     sub.add_parser("sync-reviews", help="Apply checked boxes in APPROVAL.md once")
     sub.add_parser("reconcile", help="Check interrupted writes and settle them")
     sub.add_parser("probe-models", help="Send synthetic requests to Jev and GLM (paid; no vault data)")
+    sub.add_parser("probe-private", help="Send one synthetic request to the private model (no vault data)")
     sub.add_parser("lint", help="Run the vault check (safe fixes included), write _agent/LINT.md and print it")
     sub.add_parser("digest", help="Write the daily digest to _agent/TODAY.md")
     export = sub.add_parser("export", help="Bundle one project into a single Markdown file in state/exports/")
@@ -51,12 +57,27 @@ def _parser() -> argparse.ArgumentParser:
     capture.add_argument("text", nargs="+")
     secret = sub.add_parser("set-secret", help="Save a secret outside the vault (hidden prompt)")
     secret.add_argument("name", help=f"{', '.join(sorted(NAMES))}, or a name from [endpoint_keys]")
-    telegram = sub.add_parser("telegram", help="Telegram capture helpers")
-    telegram.add_argument("action", choices=["setup", "poll"])
+    telegram = sub.add_parser("telegram", help="Telegram helpers: setup finds your chat id, test sends one message, "
+                                               "poll reads your messages once")
+    telegram.add_argument("action", choices=["setup", "poll", "test"])
+    plan = sub.add_parser("plan", help="Show today's plan: the top tasks in free time, and the week's load")
+    plan.add_argument("--redo", action="store_true",
+                      help="Make today's plan again from now and rewrite the calendar file (blocks already in "
+                           "Proton Calendar stay until you delete them)")
+    sub.add_parser("trust", help="Show this week's trust report: per kind, what you approved, edited and rejected, "
+                                 "and the kinds that earned auto-apply")
+    drafts = sub.add_parser("drafts", help="List approved drafts that have no record of reaching Proton, or save them again")
+    drafts.add_argument("action", choices=["list", "resend"])
+    drafts.add_argument("--id", help="resend: the proposal id from the list")
+    drafts.add_argument("--all", action="store_true", help="resend: every draft in the list")
     calendar = sub.add_parser("calendar", help="Show today's calendar events, or export Radicale's events once")
     calendar.add_argument("action", nargs="?", choices=["today", "export"], default="today")
     calendar.add_argument("folder", nargs="?", type=Path, default=Path("radicale-export"),
                           help="export: where the .ics files go (default: radicale-export)")
+    birthdays = sub.add_parser("birthdays", help="Review annual message reminders from Proton Calendar")
+    birthdays.add_argument("action", choices=["scan"])
+    birthdays.add_argument("--choose-date", action="append", default=[], metavar="NAME=MM-DD",
+                           help="Choose a verified date for an ambiguous birthday")
     learning = sub.add_parser("learning", help="Inspect, forget or import approved interpretation examples")
     learning_sub = learning.add_subparsers(dest="learning_command", required=True)
     learning_sub.add_parser("list")
@@ -70,6 +91,18 @@ def _parser() -> argparse.ArgumentParser:
     for name in ("show", "approve", "reject"):
         review_sub.add_parser(name).add_argument("id")
     return parser
+
+
+def _ping_summary(settings: Settings) -> str:
+    """The doctor's line on the pings: which are on, the brief's time and the quiet hours."""
+    def hhmm(clock: tuple[int, int]) -> str:
+        return f"{clock[0]:02d}:{clock[1]:02d}"
+
+    if not settings.telegram_pings:
+        return "Telegram pings: none, capture only"
+    names = [f"brief ({hhmm(settings.telegram_brief)})" if name == "brief" else name for name in settings.telegram_pings]
+    return (f"Telegram pings: {', '.join(names)} · quiet "
+            f"{hhmm(settings.telegram_quiet_start)}–{hhmm(settings.telegram_quiet_end)}")
 
 
 def _doctor(settings: Settings) -> int:
@@ -145,8 +178,26 @@ def _doctor(settings: Settings) -> int:
         check(found is not None, f"PDF reader (pypdf {found})" if found else "PDF reader",
               "" if found else f"pypdf is not installed: run {pdf.INSTALL}")
     if settings.telegram_enabled:
-        check(has_secret("telegram", settings.state_dir), "Telegram bot token saved")
+        if settings.telegram_capture == "direct" or settings.telegram_pings:
+            check(has_secret("telegram", settings.state_dir), "Telegram bot token saved")
         check(bool(settings.telegram_chat_id), "Telegram chat_id set")
+        if settings.telegram_capture == "relay":
+            folder = settings.telegram_relay_folder
+            check(folder is not None and folder.is_dir(), "Telegram relay folder",
+                  "Syncthing must deliver relay host captures here")
+        check(True, _ping_summary(settings))
+    if settings.private_model_enabled:
+        parts = urllib.parse.urlsplit(settings.private_model_url)
+        where = f"{parts.hostname}:{parts.port or (443 if parts.scheme == 'https' else 80)}"
+        try:
+            knock(settings.private_model_url)
+            check(True, "Private model reachable", f"{settings.private_model_name} at {where}")
+        except OSError as exc:
+            check(False, "Private model reachable", f"{where}: {type(exc).__name__}. Start it, or private items wait for you")
+        if settings.private_model_key:
+            saved = has_secret(settings.private_model_key, settings.state_dir)
+            check(saved, f"Key '{settings.private_model_key}' for the private model",
+                  "" if saved else f"missing: run set-secret {settings.private_model_key}")
     if settings.mail_enabled:
         saved = has_secret(mailbox.SECRET, settings.state_dir)
         if settings.mail_source == "bridge":
@@ -192,6 +243,18 @@ def _probe_with(settings: Settings, provider: OpenRouter) -> int:
     print(f"Documents ({settings.document_model}):", provider.document(
         "# BIO 101 syllabus\nLab report 1 due Oct 14.\nMidterm exam: Tuesday, October 20.\n", "bio syllabus.md",
         date(2026, 9, 27), projects, areas, ["04_REFERENCE/COURSES"]))
+    return 0
+
+
+def _probe_private(settings: Settings) -> int:
+    """One made-up capture to the private model: proof that it answers in the shape the agent needs."""
+    if not settings.private_model_ready("interpret"):
+        raise RuntimeError("The private model is off. Set enabled = true under [private_model] in config.toml "
+                           "(and keep interpret under jobs)")
+    projects = [{"key": "BIOLOGY_101", "name": "Biology 101", "aliases": [], "status": "active", "area": "AREA_SCHOOL"}]
+    areas = [{"key": "AREA_SCHOOL", "aliases": ["School"]}]
+    print("Private model:", OpenRouter(settings).interpret("Call the dentist to schedule a cleaning", "Synthetic probe",
+                                                           projects, areas, [], [], private=True))
     return 0
 
 
@@ -284,8 +347,69 @@ def _restart(settings: Settings) -> int:
     return 0
 
 
+def _drafts(agent: Agent, args: argparse.Namespace) -> int:
+    """Approved drafts with no record of reaching Proton Drafts: list them, or queue them for another save. Drafts
+    approved before the Outbox existed left no record, so one that did arrive is listed too; check Proton Drafts."""
+    outbox = Outbox(agent)
+    lost = outbox.unrecorded()
+    if args.action == "list":
+        if not lost:
+            print("Every approved draft has a record of reaching your Proton Drafts" if outbox.waiting() == [] else
+                  "No other approved drafts. Some are waiting for Proton; the agent saves them at its next check")
+            return 0
+        print(f"{len(lost)} approved draft{'s' if len(lost) != 1 else ''} with no record of reaching your Proton Drafts:")
+        for row, ops in lost:
+            for _, op in ops:
+                print(f"{row['id']}  approved {row['updated_at'][:16].replace('T', ' ')}  "
+                      f"to {op.get('to') or '(no address)'}  {op['subject']}")
+        print("Save one again: drafts resend --id <id>. All of them: drafts resend --all. A draft approved before "
+              "this list existed may already be in Proton Drafts: look first.")
+        return 0
+    if not args.id and not args.all:
+        print("Say which: drafts resend --id <id>, or drafts resend --all")
+        return 1
+    if args.id:
+        row = agent.ledger.get(args.id)
+        if row is None or row["status"] != "committed" or not draft_ops(json.loads(row["proposal_json"])):
+            print(f"No approved draft with id {args.id}. Run drafts list for the ids")
+            return 1
+        rows = [row]
+    else:
+        rows = [row for row, _ in lost]
+    queued = sum(outbox.resend(row) for row in rows)
+    for message in outbox.flush():
+        print(message)
+    left = len(outbox.waiting())
+    if left:
+        print(f"{left} draft{'s are' if left != 1 else ' is'} waiting for Proton. The agent saves "
+              f"{'them' if left != 1 else 'it'} when Bridge is open")
+    elif not queued:
+        print("Nothing to save")
+    return 0
+
+
 def _import_v1(agent: Agent, path: Path) -> int:
     print(f"Imported {agent.ledger.import_v1(path)} approved examples from version 1")
+    return 0
+
+
+def _plan(agent: Agent, args: argparse.Namespace) -> int:
+    planner = Planner(agent, Housekeeper(agent).calendar_read)
+    vault = agent.vault()
+    now = datetime.now()
+    if args.redo:
+        planner.redo(vault, now)
+    for line in planner.report(vault, now):
+        print(line)
+    print(f"- Load: {planner.load_text(vault, now, agent.today())}")
+    return 0
+
+
+def _trust(agent: Agent) -> int:
+    today = agent.today()
+    monday = today - timedelta(days=today.weekday())
+    for line in TrustReport(agent).lines(monday, monday + timedelta(days=6)):
+        print(line)
     return 0
 
 
@@ -297,6 +421,8 @@ def main(argv: list[str] | None = None) -> int:
             return _doctor(settings)
         if args.command == "probe-models":
             return _probe(settings)
+        if args.command == "probe-private":
+            return _probe_private(settings)
         if args.command == "stop":
             return _stop(settings)
         if args.command == "restart":
@@ -341,9 +467,35 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             if args.command == "telegram":
                 telegram = TelegramCapture(agent)
-                for message in (telegram.setup() if args.action == "setup" else telegram.poll()):
+                if settings.telegram_capture == "relay" and args.action == "setup":
+                    print("Telegram setup reads the bot. Stop relay host's relay and switch to direct capture first.")
+                    return 1
+                poll = RelayCapture(agent).poll if settings.telegram_capture == "relay" else telegram.poll
+                actions = {"setup": telegram.setup, "poll": poll, "test": telegram.hello}
+                for message in actions[args.action]():
                     print(message)
                 return 0
+            if args.command == "drafts":
+                return _drafts(agent, args)
+            if args.command == "plan":
+                return _plan(agent, args)
+            if args.command == "trust":
+                return _trust(agent)
+            if args.command == "birthdays":
+                choices = {}
+                for entry in args.choose_date:
+                    name, sep, day = entry.partition("=")
+                    if not sep or not name.strip():
+                        raise ValueError("Use --choose-date NAME=MM-DD")
+                    choices[name.strip()] = day.strip()
+                result = BirthdayImporter(agent).scan(choices)
+                if result.warning:
+                    print("CHECK:", result.warning)
+                print(f"{result.count} birthday reminder{'s' if result.count != 1 else ''} ready in APPROVAL"
+                      if result.proposal_id else f"{result.count} new birthday reminders")
+                for issue in result.flagged:
+                    print("Needs date review:", issue)
+                return 1 if result.warning and result.proposal_id is None else 0
             if args.command == "calendar" and args.action == "export":
                 try:
                     written = radicale.export(Path(settings.calendar_folder), settings.calendar_user, args.folder)

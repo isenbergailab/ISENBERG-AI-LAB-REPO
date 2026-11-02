@@ -99,7 +99,7 @@ class ChoiceTests(LintCase):
                          ["Tag #computer", "Tag #calls", "Tag #anywhere", "Tag #errands", "Leave it"])
         today = self.read("_agent/TODAY.md")
         self.assertIn("### Vault choices (2)", today)
-        self.assertEqual(today.count("[[APPROVAL#^p-"), 3)  # 2 choices + 1 follow-up proposal, each listed once
+        self.assertEqual(today.count("[[APPROVAL#^p-"), 2)  # general proposals stay in APPROVAL
         self.assertIn(f"- [[APPROVAL#^p-{row['id']}|Pick a context · Fix bike]]", today)
         self.assertIn(f"[[APPROVAL#^p-{row['id']}|answer]]", self.read("_agent/LINT.md"))
         self.answer(row, "Tag #errands")

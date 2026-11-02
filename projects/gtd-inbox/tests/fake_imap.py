@@ -1,8 +1,8 @@
 """A small IMAP server over TLS for the mail tests: just enough of RFC 3501 (plus MOVE and UIDPLUS) for imaplib
 and the agent.
 
-Mail lives in memory; nothing real is read. tls_fixtures generates temporary certificates
-for a loopback-only fake server; temporary keys are removed at process exit.
+Mail lives in memory; nothing real is read. The certificates in tests/fixtures are for tests only
+(tests/fixtures/make-imap-certs.sh makes new ones): a throwaway CA and a 127.0.0.1 certificate it signed.
 """
 from __future__ import annotations
 
@@ -55,6 +55,7 @@ class FakeImap:
         self.fetched: list[tuple[int, str]] = []          # (uid, fetch items) for every message served
         self.next_uid = 1
         self.uidvalidity = 1
+        self.append_script: list[str] = []  # what each APPEND does, in order: "ok" (the default), "no" or "drop"
         self._lock = threading.Lock()
         self._server: _Server | None = None
         self.port = 0
@@ -108,11 +109,12 @@ class FakeImap:
                         except (OSError, ValueError):
                             pass
 
-        self._server = _Server(("127.0.0.1", 0), Handler)
+        self._server = _Server(("127.0.0.1", self.port), Handler)  # port 0 the first time, the same one after a stop
         self.port = self._server.server_address[1]
         threading.Thread(target=self._server.serve_forever, daemon=True).start()
 
     def stop(self) -> None:
+        """Close the server, as when Bridge is closed. start() opens it again on the same port, mail intact."""
         if self._server is not None:
             self._server.shutdown()
             self._server.server_close()
@@ -192,6 +194,12 @@ class FakeImap:
                         self.folders[args[0]] = []
                         send(f"{tag} OK CREATE completed")
                 elif name == "APPEND":
+                    action = self.append_script.pop(0) if self.append_script else "ok"
+                    if action == "drop":  # the connection ends without an answer
+                        return None
+                    if action == "no":
+                        send(f"{tag} NO [OVERQUOTA] The mailbox will not take this message")
+                        continue
                     folder = self._folder(args[0]) or args[0]
                     flags = set(args[1].strip("()").split()) if len(args) > 1 and args[1].startswith("(") else set()
                     self.folders.setdefault(folder, []).append({"uid": self.next_uid, "data": data, "flags": flags})

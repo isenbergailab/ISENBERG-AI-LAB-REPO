@@ -1,0 +1,23 @@
+# Secrets and personal configuration
+.env
+.env.*
+!.env.example
+config/local.json
+config/user.json
+
+# User inputs and generated exports
+inbox/
+exports/
+*.tsv
+*.validation.json
+!examples/*.tsv
+!examples/*.validation.json
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Editors and operating systems
+.DS_Store
+.vscode/
+.idea/

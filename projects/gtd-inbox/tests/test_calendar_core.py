@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import helpers
-from gtd_agent.calendar_ics import free_gaps, parse_events
+from gtd_agent.calendar_ics import event_span, free_gaps, parse_events
 from gtd_agent.core import (Settings, Snapshot, _mini_toml, atomic_replace, digest, parse_captures, write_owned)
 from gtd_agent.credentials import get_secret, set_secret
 
@@ -99,6 +99,74 @@ class CalendarTests(unittest.TestCase):
         self.assertEqual(later, [(datetime(2026, 10, 1, 16, 50), datetime(2026, 10, 1, 18))])
 
 
+def one_event(extra: str = "", head: str = "") -> str:
+    return ("BEGIN:VCALENDAR\r\n" + head + "BEGIN:VEVENT\r\nUID:x\r\nSUMMARY:Checkup\r\n"
+            "DTSTART:20261001T140000Z\r\nDTEND:20261001T150000Z\r\n" + extra + "END:VEVENT\r\nEND:VCALENDAR\r\n")
+
+
+class PrivateEventTests(unittest.TestCase):
+    """An event the calendar marks private is never named outside the calendar (a phone ping, for one)."""
+
+    def events(self, text: str):
+        return parse_events(text, datetime(2026, 10, 1), datetime(2026, 10, 3))
+
+    def test_an_event_is_not_private_unless_the_calendar_says_so(self):
+        self.assertFalse(self.events(one_event())[0].private)
+        self.assertFalse(self.events(one_event("CLASS:PUBLIC\r\n"))[0].private)
+
+    def test_private_and_confidential_events_are_private_in_any_case(self):
+        for value in ("PRIVATE", "CONFIDENTIAL", "private"):
+            with self.subTest(value):
+                self.assertTrue(self.events(one_event(f"CLASS:{value}\r\n"))[0].private)
+
+    def test_every_repeat_of_a_private_event_is_private(self):
+        found = self.events(one_event("CLASS:PRIVATE\r\nRRULE:FREQ=DAILY;COUNT=2\r\n"))
+        self.assertEqual([e.private for e in found], [True, True])
+
+    def test_a_moved_repeat_keeps_its_own_class(self):
+        moved = one_event("CLASS:PRIVATE\r\nRRULE:FREQ=DAILY;COUNT=2\r\n").replace(
+            "END:VCALENDAR", "BEGIN:VEVENT\r\nUID:x\r\nRECURRENCE-ID:20261002T140000Z\r\nSUMMARY:Checkup\r\n"
+            "DTSTART:20261002T160000Z\r\nDTEND:20261002T170000Z\r\nEND:VEVENT\r\nEND:VCALENDAR")
+        self.assertEqual([e.private for e in self.events(moved)], [True, False])
+
+
+class EventSpanTests(unittest.TestCase):
+    """How TODAY and the phone brief word the time an event takes on one day."""
+    DAY = datetime(2026, 10, 1)
+
+    def span(self, start: datetime, end: datetime) -> str:
+        return event_span(helpers_event(start, end), self.DAY)
+
+    def test_an_event_inside_the_day_has_both_times(self):
+        self.assertEqual(self.span(datetime(2026, 10, 1, 9), datetime(2026, 10, 1, 10, 30)), "09:00–10:30")
+
+    def test_an_event_that_began_before_the_day_is_until(self):
+        self.assertEqual(self.span(datetime(2026, 9, 30, 22), datetime(2026, 10, 1, 7)), "until 07:00")
+
+    def test_an_event_that_runs_past_the_day_names_the_weekday_it_ends(self):
+        self.assertEqual(self.span(datetime(2026, 10, 1, 23), datetime(2026, 10, 2, 1)), "23:00 until Fri 01:00")
+
+    def test_an_event_that_covers_the_whole_day_is_all_day(self):
+        self.assertEqual(self.span(datetime(2026, 9, 30, 12), datetime(2026, 10, 2, 12)), "all day")
+
+    def test_an_event_that_began_before_the_day_and_lasts_to_its_end_is_all_day(self):
+        self.assertEqual(self.span(datetime(2026, 9, 30, 12), datetime(2026, 10, 2, 0)), "all day")
+
+    def test_an_event_that_starts_at_midnight_and_runs_on_keeps_its_times(self):
+        self.assertEqual(self.span(datetime(2026, 10, 1, 0), datetime(2026, 10, 2, 12)), "00:00 until Fri 12:00")
+
+    def test_an_event_that_starts_at_midnight_did_not_begin_earlier(self):
+        self.assertEqual(self.span(datetime(2026, 10, 1, 0), datetime(2026, 10, 1, 7)), "00:00–07:00")
+
+    def test_an_event_that_ends_as_the_day_does_is_inside_it(self):
+        self.assertEqual(self.span(datetime(2026, 10, 1, 23), datetime(2026, 10, 2, 0)), "23:00–00:00")
+
+
+def helpers_event(start: datetime, end: datetime):
+    from gtd_agent.calendar_ics import Event
+    return Event("Thing", start, end, False, True)
+
+
 class CoreTests(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
@@ -189,7 +257,7 @@ class SpanAndRepeatTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(resolve_date_evidence(text, ref), expected)
         with self.assertRaises(ValueError):
-            resolve_date_evidence("after my cpa exams", ref)
+            resolve_date_evidence("after my certification exams", ref)
 
     def test_repeat_rules(self):
         from gtd_agent.clarification import clean_recurrence, first_due

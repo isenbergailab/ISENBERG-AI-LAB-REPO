@@ -190,7 +190,7 @@ class Watcher:
         needs (ticked)."""
         today = self.agent.today()
         steps = [t for t in project.tasks if t.is_open and not t.is_waiting and t.section.casefold() == "steps"
-                 and t.heading.casefold() != "done" and not t.indent]
+                 and t.heading.casefold() != "done" and not t.indent and not vault.is_private_task(t)]
         listed = [{"id": f"s{number}", "text": step.title} for number, step in enumerate(steps, 1)]
         note, answer = "", None
         if not self.settings.remote_inference or not self.agent._provider_ready():

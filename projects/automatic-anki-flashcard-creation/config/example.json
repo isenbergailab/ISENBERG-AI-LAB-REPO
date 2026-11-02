@@ -1,0 +1,32 @@
+{
+  "target_language": "ja",
+  "explanation_language": "en",
+  "language_profile": "japanese",
+  "profile_options": {},
+  "field_mapping": {
+    "Prompt": "Front",
+    "Answer": "Back",
+    "Notes": "Notes",
+    "Example": "Example"
+  },
+  "batch": {
+    "explicit_export": true,
+    "inactivity_seconds": 0
+  },
+  "duplicates": {
+    "policy": "reject",
+    "case_sensitive": false
+  },
+  "storage": {
+    "state_directory": "state",
+    "identity_scope": "user-and-conversation"
+  },
+  "output": {
+    "directory": "exports",
+    "naming": "nato",
+    "write_validation_report": true
+  },
+  "adapter": {
+    "type": "hermes"
+  }
+}

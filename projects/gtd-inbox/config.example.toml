@@ -53,6 +53,7 @@ min_free_minutes = 15
 cache_minutes = 30
 
 [telegram]
+pings = [] # opt-in only after reviewing outbound messages
 enabled = false                # needs `set-secret telegram`, then `telegram setup`
 chat_id = 0                    # `telegram setup` prints yours; messages from any other chat are ignored
 
@@ -87,7 +88,7 @@ exam_lead_days = 4             # exam study tasks appear this many days before t
 [models]
 jev = "typesafe/jev-1.13"      # routes Inbox lines (OpenRouter decisions API)
 glm = "z-ai/glm-5.3-flash"     # default for every job below
-documents = "z-ai/glm-5.3"     # reads whole Inbox files; under a cent for an hour-long transcript
+documents = "z-ai/glm-5.3"     # optional whole-document extraction; provider costs unverified
 # One model per job, if you want: interpret, split, decided, outcome, vague_check, someday_topics, mail, draft,
 # after_event
 # interpret = "z-ai/glm-5.3-flash"
@@ -115,3 +116,6 @@ bookkeeping = []
 
 [privacy]
 remote_inference = false       # true sends Inbox text (never #private notes) to OpenRouter
+
+[private_model]
+enabled = false

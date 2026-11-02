@@ -1,0 +1,20 @@
+{
+  "name": "Mandarin Chinese vocabulary",
+  "target_language": "zh-Hans",
+  "explanation_language": "en",
+  "roles": {
+    "Prompt": "Chinese headword using the script selected by profile_options.script; preserve the source script when that option is 'source'.",
+    "Answer": "Concise common English meaning or meanings.",
+    "Notes": "Hanyu Pinyin using profile_options.pinyin_style, plus classifier or usage notes when essential.",
+    "Example": "A complete natural Chinese sentence, then <br>, then a complete English translation."
+  },
+  "rules": [
+    "Do not mix simplified and traditional forms unless Notes explicitly labels both.",
+    "Preserve tone marks or tone numbers consistently within a batch.",
+    "Record a classifier only when it is useful for normal use of a noun.",
+    "Separate genuinely different meanings with semicolons and avoid redundant synonyms.",
+    "Prefer a source example; enrich from a reputable dictionary only when missing; generate only as a last resort."
+  ],
+  "example_separator": "<br>",
+  "approved_reference_domains": ["mdbg.net"]
+}

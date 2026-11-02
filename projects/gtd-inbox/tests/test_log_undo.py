@@ -20,7 +20,7 @@ class LogUndoTests(VaultCase):
         approval = self.read("_agent/APPROVAL.md")
         self.assertNotIn("gtd-agent:undo", approval)
         self.assertNotIn("- [ ] Undo", approval)
-        self.assertIn("[[LOG]]", approval)
+        self.assertNotIn("Check one box per item", approval)
 
     def test_log_lists_the_applied_change_with_its_undo_box(self):
         self.approve_capture()

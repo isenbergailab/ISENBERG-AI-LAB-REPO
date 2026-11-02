@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-import logging
 import sys
 import tempfile
 import textwrap
@@ -190,8 +189,8 @@ class FakeProvider:
         return {"operation": ("new_capture", 0.9), "category": ("next_action", 0.9), "multiplicity": ("single", 0.9)}
 
     def interpret(self, text, issue, projects, areas, items, examples, teacher_feedback=None, previous=None, **kw):
-        self.calls.append(("interpret", {"text": text, "projects": projects, "areas": areas, "items": items,
-                                         "feedback": teacher_feedback, **kw}))
+        self.calls.append(("interpret", {"text": text, "issue": issue, "projects": projects, "areas": areas,
+                                         "items": items, "examples": examples, "feedback": teacher_feedback, **kw}))
         answer = self.interpretations.pop(0)
         return answer(text, projects, areas, items) if callable(answer) else answer
 
@@ -208,7 +207,7 @@ class FakeProvider:
         call = {"mail": mail, "mail_date": mail_date, "projects": projects, "areas": areas, "open_waits": waits}
         self.calls.append(("mail", call))
         answer = self.mails.pop(0) if self.mails else {
-            "target_key": "", "summary": "", "actions": [], "events": [], "waits": [], "answers": [],
+            "target_key": "", "summary": "", "actions": [], "events": [], "waits": [], "answers": [], "replies": [],
             "explanation": "Nothing to act on."}
         return answer(call) if callable(answer) else answer
 
@@ -218,8 +217,9 @@ class FakeProvider:
             return self.draft_by_kind[kind]
         if self.drafts:
             return self.drafts.pop(0)
-        subject = f"Re: {context.get('their_subject', '')}" if kind == "reply" else f"Following up: {context.get('what', '')}"
-        return {"subject": subject, "body": f"Hi {context.get('to_name') or 'there'},\n\nThank you!\n\nTaylor"}
+        subject = (f"Re: {context.get('their_subject', '')}" if kind in {"reply", "answer"}
+                   else f"Following up: {context.get('what', '')}")
+        return {"subject": subject, "body": f"Hi {context.get('to_name') or 'there'},\n\nThank you!\n\nSampleOwner"}
 
     def decided(self, capture, project, questions, sections, reference_date):
         self.calls.append(("decided", {"capture": capture, "project": project, "questions": questions,
@@ -261,7 +261,6 @@ class VaultCase(unittest.TestCase):
     def setUp(self) -> None:
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
-        self.addCleanup(logging.shutdown)
         self.base = Path(temp.name) / self.base_subdir
         self.base.mkdir(parents=True, exist_ok=True)
         make_vault(self.base / "vault", self.extra_files())
@@ -272,6 +271,15 @@ class VaultCase(unittest.TestCase):
         self.agent = Agent(self.settings, self.provider, today=TODAY)
         self.said: list[str] = []
         self.agent.health.out = self.said.append  # lines the agent would print, kept for assertions
+        def close_test_log() -> None:
+            """Release Windows' file handle before the temporary vault is removed."""
+            logger = self.agent.health.logger
+            target = str((self.settings.state_dir / "logs" / "agent.log").resolve())
+            for handler in list(logger.handlers):
+                if getattr(handler, "baseFilename", None) == target:
+                    logger.removeHandler(handler)
+                    handler.close()
+        self.addCleanup(close_test_log)
         self.addCleanup(self.agent.close)
 
     def extra_files(self) -> dict[str, str]:
